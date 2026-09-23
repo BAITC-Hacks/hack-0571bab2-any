@@ -279,7 +279,11 @@ export function buildApp(options: {
       const publicApiOrigin = options.apiOrigin || process.env.API_ORIGIN || '';
       const secure = request.protocol === 'https' || publicApiOrigin.startsWith('https://') ||
         process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
-      reply.header('Set-Cookie', 'ha_sid=' + id + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=14400' + (secure ? '; Secure' : ''));
+      const cookieScope = '; Path=/; SameSite=Lax; Max-Age=14400' + (secure ? '; Secure' : '');
+      reply.header('Set-Cookie', [
+        'ha_sid=' + id + '; HttpOnly' + cookieScope,
+        'csrf_token=' + session.csrfToken + cookieScope,
+      ]);
     }
     if (session) sessionFor.set(request, session);
   });
@@ -459,7 +463,7 @@ export function buildApp(options: {
     const message = failure?.message || attachmentFailure?.message || (error instanceof CatalogError ? error.message :
       status === 503 ? 'Сервис временно недоступен. Повторите позже.' : 'Некорректный запрос.');
     const detail = failure?.available === undefined ? {} : { available: failure.available };
-    reply.code(status).send({ error: { code, message, requestId: String(request.id), ...detail } });
+    reply.code(status).send({ error: { code, message, requestId: String(request.id), ...detail }, ...detail });
   });
 
   return app;

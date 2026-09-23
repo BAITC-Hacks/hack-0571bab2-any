@@ -13,13 +13,19 @@ async function openSession(app: App): Promise<BrowserSession> {
   assert.equal(response.statusCode, 200);
   const rawCookie = response.headers['set-cookie'];
   assert.ok(rawCookie, 'a new session must set a cookie');
-  const setCookie = Array.isArray(rawCookie) ? rawCookie[0] : String(rawCookie);
+  const cookies = Array.isArray(rawCookie) ? rawCookie : [String(rawCookie)];
+  const setCookie = cookies.find((value) => value.startsWith('ha_sid=')) || '';
   assert.match(setCookie, /HttpOnly/);
   assert.match(setCookie, /SameSite=Lax/);
   const cookie = setCookie.split(';')[0];
   const csrfToken = response.json().csrfToken;
   assert.equal(typeof csrfToken, 'string');
   assert.ok(csrfToken.length > 10);
+  const csrfCookie = cookies.find((value) => value.startsWith('csrf_token='));
+  assert.ok(csrfCookie, 'a readable CSRF cookie supports the current browser client');
+  assert.equal(csrfCookie.split(';')[0], 'csrf_token=' + csrfToken);
+  assert.doesNotMatch(csrfCookie, /HttpOnly/);
+  assert.match(csrfCookie, /SameSite=Lax/);
   return { cookie, csrfToken };
 }
 
@@ -237,6 +243,7 @@ test('T6: confirm rereads mutable stock and rejects an outdated proposal', async
   assert.equal(response.statusCode, 409);
   assert.equal(response.json().error.code, 'INSUFFICIENT_STOCK');
   assert.equal(response.json().error.available, 2);
+  assert.equal(response.json().available, 2);
   assert.equal((await cart(app, session)).json().itemCount, 0);
 });
 
@@ -509,7 +516,10 @@ test('session cookie is Secure for an HTTPS public origin or production environm
   const httpsApp = buildApp({ catalog: createDemoCatalog(), apiOrigin: 'https://api.test' });
   t.after(() => httpsApp.close());
   const httpsResponse = await httpsApp.inject({ method: 'GET', url: '/api/cart', headers: { host } });
-  assert.match(String(httpsResponse.headers['set-cookie']), /; Secure(?:;|$)/);
+  const httpsCookies = httpsResponse.headers['set-cookie'];
+  assert.ok(Array.isArray(httpsCookies));
+  assert.equal(httpsCookies.length, 2);
+  assert.ok(httpsCookies.every((cookie) => /; Secure(?:;|$)/.test(cookie)));
 
   const previous = process.env.NODE_ENV;
   process.env.NODE_ENV = 'production';
@@ -517,7 +527,9 @@ test('session cookie is Secure for an HTTPS public origin or production environm
     const productionApp = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
     t.after(() => productionApp.close());
     const productionResponse = await productionApp.inject({ method: 'GET', url: '/api/cart', headers: { host } });
-    assert.match(String(productionResponse.headers['set-cookie']), /; Secure(?:;|$)/);
+    const productionCookies = productionResponse.headers['set-cookie'];
+    assert.ok(Array.isArray(productionCookies));
+    assert.ok(productionCookies.every((cookie) => /; Secure(?:;|$)/.test(cookie)));
   } finally {
     if (previous === undefined) delete process.env.NODE_ENV;
     else process.env.NODE_ENV = previous;
