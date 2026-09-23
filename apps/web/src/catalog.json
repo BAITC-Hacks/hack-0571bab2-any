@@ -1,0 +1,756 @@
+[
+  {
+    "path": "/catalog/kabel_provod/",
+    "image": "/assets/category-0.png",
+    "title": "Кабель / Провод",
+    "children": [
+      {
+        "path": "/catalog/kabel_provod/kabel_silovoy_dlya_statsionarnoy_prokladki_/",
+        "image": "/assets/sub-0-0.png",
+        "title": "Кабель силовой для стационарной прокладки"
+      },
+      {
+        "path": "/catalog/kabel_provod/kabel_i_provod_dlya_elektricheskikh_ustanovok_/",
+        "image": "/assets/sub-0-1.png",
+        "title": "Кабель и провод для электрических установок"
+      },
+      {
+        "path": "/catalog/kabel_provod/kabel_dlya_nestatsionarnoy_prokladki_/",
+        "image": "/assets/sub-0-2.png",
+        "title": "Кабель для нестационарной прокладки"
+      },
+      {
+        "path": "/catalog/kabel_provod/kabel_kontrolnyy_/",
+        "image": "/assets/sub-0-3.png",
+        "title": "Кабель контрольный"
+      },
+      {
+        "path": "/catalog/kabel_provod/provod_dlya_vozdushnykh_liniy_peredach/",
+        "image": "/assets/sub-0-4.png",
+        "title": "Провод для воздушных линий передач"
+      },
+      {
+        "path": "/catalog/kabel_provod/kabel_i_provod_razlichnogo_naznacheniya/",
+        "image": "/assets/sub-0-5.png",
+        "title": "Кабель и провод различного назначения"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/svetilniki_lampy/",
+    "image": "/assets/category-1.png",
+    "title": "Светильники / Лампы",
+    "children": [
+      {
+        "path": "/catalog/svetilniki_lampy/svetilniki_dlya_vnutrennego_osveshcheniya/",
+        "image": "/assets/sub-1-0.png",
+        "title": "Светильники"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/svetilniki_germetichnye_dlya_vnutrennego_i_naruzhnogo_osveshcheniya/",
+        "image": "/assets/sub-1-1.png",
+        "title": "Светильники герметичные для внутреннего и наружного освещения"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/lampy/",
+        "image": "/assets/sub-1-2.png",
+        "title": "Лампы"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/svetilniki_dlya_ulichnogo_osveshcheniya/",
+        "image": "/assets/sub-1-3.png",
+        "title": "Светильники для уличного освещения"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/prozhektory/",
+        "image": "/assets/sub-1-4.png",
+        "title": "Прожекторы"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/svetilniki_dlya_avariynogo_osveshcheniya/",
+        "image": "/assets/sub-1-5.png",
+        "title": "Светильники для аварийного освещения"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/svetilniki_spetsialnogo_naznacheniya/",
+        "image": "/assets/sub-1-6.png",
+        "title": "Светильники специального назначения"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/komplektuyushchie_k_svetilnikam_2/",
+        "image": "/assets/sub-1-7.png",
+        "title": "Комплектующие к светильникам"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/led_lenta/",
+        "image": "/assets/sub-1-8.png",
+        "title": "LED Лента"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/dopolnitelnoe_oborudovanie/",
+        "image": "/assets/sub-1-9.png",
+        "title": "Дополнительное оборудование"
+      },
+      {
+        "path": "/catalog/svetilniki_lampy/upravlenie_osveshcheniem/",
+        "image": "/assets/sub-1-10.png",
+        "title": "Управление освещением"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/nizkovoltnaya_apparatura/",
+    "image": "/assets/category-2.png",
+    "title": "Низковольтная аппаратура",
+    "children": [
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/modulnye_avtomaticheskie_vyklyuchateli/",
+        "image": "/assets/sub-2-0.png",
+        "title": "Модульные автоматические выключатели"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/silovye_avtomaticheskie_vyklyuchateli/",
+        "image": "/assets/sub-2-1.png",
+        "title": "Силовые автоматические выключатели"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/ustroystvo_differentsialnoy_zashchity/",
+        "image": "/assets/sub-2-2.png",
+        "title": "Устройство дифференциальной защиты"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/dop_ustroystva_k_avt_vyklyuchatelyam/",
+        "image": "/assets/sub-2-3.png",
+        "title": "Доп устройства к авт.выключателям"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/puskateli_kontaktory/",
+        "image": "/assets/sub-2-4.png",
+        "title": "Пускатели / контакторы"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/pristavki_k_kontaktoram/",
+        "image": "/assets/sub-2-5.png",
+        "title": "Приставки к контакторам"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/ogranichiteli_impulsnykh_perenapryazheniy_ops/",
+        "image": "/assets/sub-2-6.png",
+        "title": "Ограничители импульсных перенапряжений ОПС"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/vyklyuchateli_nagruzki_vn_32/",
+        "image": "/assets/sub-2-7.png",
+        "title": "Выключатели нагрузки ВН 32"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/rubilniki/",
+        "image": "/assets/sub-2-8.png",
+        "title": "Рубильники"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/osnovaniya_predokhraniteli_/",
+        "image": "/assets/sub-2-9.png",
+        "title": "Основания / предохранители"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/pribory_kontrolya/",
+        "image": "/assets/sub-2-10.png",
+        "title": "Приборы контроля"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/knopki/",
+        "image": "/assets/sub-2-11.png",
+        "title": "Кнопки"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/indikatory_signalnye_lampy/",
+        "image": "/assets/sub-2-12.png",
+        "title": "Индикаторы сигнальные лампы"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/pereklyuchateli/",
+        "image": "/assets/sub-2-13.png",
+        "title": "Переключатели"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/posty_knopochnye/",
+        "image": "/assets/sub-2-14.png",
+        "title": "Посты кнопочные"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/transformatory/",
+        "image": "/assets/sub-2-15.png",
+        "title": "Трансформаторы"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/kompaktnyy_bazovyy_blok_schneider_electric/",
+        "image": "/assets/sub-2-16.png",
+        "title": "Компактный базовый блок Schneider Electric"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/modul_tmz_schneider_electric/",
+        "image": "/assets/sub-2-17.png",
+        "title": "Модуль ТМЗ Schneider Electric"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/rele_schneider_electric/",
+        "image": "/assets/sub-2-18.png",
+        "title": "Реле Schneider Electric"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/rele_zelio_logic/",
+        "image": "/assets/sub-2-19.png",
+        "title": "Реле Zelio Logic"
+      },
+      {
+        "path": "/catalog/nizkovoltnaya_apparatura/sensornye_paneli_schneider_electric/",
+        "image": "/assets/sub-2-20.png",
+        "title": "Сенсорные панели Schneider Electric"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/kabelenesushchie_sistemy/",
+    "image": "/assets/category-3.png",
+    "title": "Кабеленесущие системы",
+    "children": [
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/kabel_kanal/",
+        "image": "/assets/sub-3-0.png",
+        "title": "Кабель-канал"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/aksessuary_k_kabel_kanalu/",
+        "image": "/assets/sub-3-1.png",
+        "title": "Аксессуары к кабель-каналу"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/aksessuary_dlya_trub_pnd_pvkh/",
+        "image": "/assets/sub-3-2.png",
+        "title": "Аксессуары для труб ПНД / ПВХ"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/metallorukav/",
+        "image": "/assets/sub-3-3.png",
+        "title": "Металлорукав"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/lotok_metallicheskiy/",
+        "image": "/assets/sub-3-4.png",
+        "title": "Лоток металлический"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/aksessuary_k_lotkam/",
+        "image": "/assets/sub-3-5.png",
+        "title": "Аксессуары к лоткам"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/napolnye_sistemy/",
+        "image": "/assets/sub-3-6.png",
+        "title": "Напольные системы"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/truby/",
+        "image": "/assets/sub-3-7.png",
+        "title": "Трубы"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/baget_potolochnyy/",
+        "image": "/assets/sub-3-8.png",
+        "title": "Багет потолочный"
+      },
+      {
+        "path": "/catalog/kabelenesushchie_sistemy/pryamoy_montazh_promrukav/",
+        "image": "/assets/sub-3-9.png",
+        "title": "Прямой монтаж (Промрукав)"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/izdeliya_dlya_montazha_i_instrument/",
+    "image": "/assets/category-4.png",
+    "title": "Изделия для монтажа и инструмент",
+    "children": [
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/izolenta/",
+        "image": "/assets/sub-4-0.png",
+        "title": "Изолента"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/shiny/",
+        "image": "/assets/sub-4-1.png",
+        "title": "Шины"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/sizy/",
+        "image": "/assets/sub-4-2.png",
+        "title": "СИЗы"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/klemmniki/",
+        "image": "/assets/sub-4-3.png",
+        "title": "Клеммники"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/salniki/",
+        "image": "/assets/sub-4-4.png",
+        "title": "Сальники"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/din_reyki_i_komplektuyushchie/",
+        "image": "/assets/sub-4-5.png",
+        "title": "DIN-рейки и комплектующие"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/mufty/",
+        "image": "/assets/sub-4-6.png",
+        "title": "Муфты"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/gilzy/",
+        "image": "/assets/sub-4-7.png",
+        "title": "Гильзы"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/nakonechniki/",
+        "image": "/assets/sub-4-8.png",
+        "title": "Наконечники"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/izolyatory_sm/",
+        "image": "/assets/sub-4-9.png",
+        "title": "Изоляторы SM"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/armatura_dlya_sip/",
+        "image": "/assets/sub-4-10.png",
+        "title": "Арматура для СИП"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/armatura_dlya_as_lep/",
+        "image": "/assets/sub-4-11.png",
+        "title": "Арматура для АС ЛЭП"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/krepyezh_styazhki/",
+        "image": "/assets/sub-4-12.png",
+        "title": "Крепёж / стяжки"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/ruchnoy_instrument/",
+        "image": "/assets/sub-4-13.png",
+        "title": "Ручной инструмент"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/markery/",
+        "image": "/assets/sub-4-14.png",
+        "title": "Маркеры"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/birki/",
+        "image": "/assets/sub-4-15.png",
+        "title": "Бирки"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/lenta_signalnaya/",
+        "image": "/assets/sub-4-16.png",
+        "title": "Лента сигнальная"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/bosh_osnastka/",
+        "image": "/assets/sub-4-17.png",
+        "title": "BOSH оснастка"
+      },
+      {
+        "path": "/catalog/izdeliya_dlya_montazha_i_instrument/mufty_kvt_fortiflex_vvodnaya/",
+        "image": "/assets/sub-4-18.png",
+        "title": "МУФТЫ КВТ / Fortiflex вводная"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/prochee_oborudovanie/",
+    "image": "/assets/category-5.png",
+    "title": "Прочее оборудование",
+    "children": [
+      {
+        "path": "/catalog/prochee_oborudovanie/stabilizatory/",
+        "image": "/assets/sub-5-0.png",
+        "title": "Стабилизаторы"
+      },
+      {
+        "path": "/catalog/prochee_oborudovanie/sec_351008568620/",
+        "image": "/assets/sub-5-1.png",
+        "title": "Заземление и молниезащита"
+      },
+      {
+        "path": "/catalog/prochee_oborudovanie/teplovye_elektricheskie_pushki/",
+        "image": "/assets/sub-5-2.png",
+        "title": "Тепловые электрические пушки"
+      },
+      {
+        "path": "/catalog/prochee_oborudovanie/lestnitsy/",
+        "image": "/assets/sub-5-3.png",
+        "title": "Лестницы"
+      },
+      {
+        "path": "/catalog/prochee_oborudovanie/svarochnoe_oborudovanie/",
+        "image": "/assets/sub-5-4.png",
+        "title": "Сварочное оборудование"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/shkafy_shchity/",
+    "image": "/assets/category-6.png",
+    "title": "Шкафы / Щиты",
+    "children": [
+      {
+        "path": "/catalog/shkafy_shchity/shchity_metallicheskie/",
+        "image": "/assets/sub-6-0.png",
+        "title": "Щиты металлические"
+      },
+      {
+        "path": "/catalog/shkafy_shchity/shchity_plastikovye/",
+        "image": "/assets/sub-6-1.png",
+        "title": "Щиты пластиковые"
+      },
+      {
+        "path": "/catalog/shkafy_shchity/zamki_dlya_shchitov/",
+        "image": "/assets/sub-6-2.png",
+        "title": "Замки для щитов"
+      },
+      {
+        "path": "/catalog/shkafy_shchity/shkafy_polki_paneli_aksessuary/",
+        "image": "/assets/sub-6-3.png",
+        "title": "Шкафы / Полки / Панели / Аксессуары"
+      },
+      {
+        "path": "/catalog/shkafy_shchity/ventilyatory_filtry_shkafnye_1/",
+        "image": "/assets/sub-6-4.png",
+        "title": "Вентиляторы, Фильтры шкафные"
+      },
+      {
+        "path": "/catalog/shkafy_shchity/obogrevateli_shkafnye_/",
+        "image": "/assets/sub-6-5.png",
+        "title": "Обогреватели шкафные"
+      },
+      {
+        "path": "/catalog/shkafy_shchity/termostaty_gigrostaty_shkafnye/",
+        "image": "/assets/sub-6-6.png",
+        "title": "Термостаты, Гигростаты шкафные"
+      },
+      {
+        "path": "/catalog/shkafy_shchity/ustroystva_kompensatsii_davleniya/",
+        "image": "/assets/sub-6-7.png",
+        "title": "Устройства компенсации давления"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/rozetki_vyklyuchateli_korobki/",
+    "image": "/assets/category-7.png",
+    "title": "Розетки/Выключатели/Коробки",
+    "children": [
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/rozetki_vyklyuchateli_unit/",
+        "image": "/assets/sub-7-0.png",
+        "title": "Розетки / Выключатели UNIT"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/rozetki_vyklyuchateli_systeme_electric/",
+        "image": "/assets/sub-7-1.png",
+        "title": "Розетки / Выключатели Systeme Electric"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/rozetki_vyklyuchateli_iek_/",
+        "image": "/assets/sub-7-2.png",
+        "title": "Розетки / Выключатели IEK"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/prochie_rozetki_vyklyuchateli_/",
+        "image": "/assets/sub-7-3.png",
+        "title": "Прочие Розетки / Выключатели"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/rozetki_vyklyuchateli_legrand_mosaic/",
+        "image": "/assets/sub-7-4.png",
+        "title": "Розетки /Выключатели Legrand"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/vilki_universalnye/",
+        "image": "/assets/sub-7-5.png",
+        "title": "Вилки универсальные"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/troyniki_universalnye_adaptera/",
+        "image": "/assets/sub-7-6.png",
+        "title": "Тройники универсальные / Адаптера"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/silovye_razyemy/",
+        "image": "/assets/sub-7-7.png",
+        "title": "Силовые Разъёмы"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/udliniteli_shnury/",
+        "image": "/assets/sub-7-8.png",
+        "title": "Удлинители / Шнуры"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/kolodki/",
+        "image": "/assets/sub-7-9.png",
+        "title": "Колодки"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/setevye_filtry/",
+        "image": "/assets/sub-7-10.png",
+        "title": "Сетевые фильтры"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/katushki_ramki/",
+        "image": "/assets/sub-7-11.png",
+        "title": "Катушки / Рамки"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/zvonki_knopki/",
+        "image": "/assets/sub-7-12.png",
+        "title": "Звонки Кнопки"
+      },
+      {
+        "path": "/catalog/rozetki_vyklyuchateli_korobki/korobki/",
+        "image": "/assets/sub-7-13.png",
+        "title": "Коробки"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/avtomatizatsiya/",
+    "image": "/assets/category-8.png",
+    "title": "Автоматизация",
+    "children": [
+      {
+        "path": "/catalog/avtomatizatsiya/bloki_avr_chint_iek/",
+        "image": "/assets/sub-8-0.png",
+        "title": "Блоки АВР/ CHINT/ IEK"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/vozdushnye_avtomaticheskie_vyklyuchateli/",
+        "image": "/assets/sub-8-1.png",
+        "title": "Воздушные автоматические выключатели"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/paneli_operatora/",
+        "image": "/assets/sub-8-2.png",
+        "title": "Панели оператора"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/preobrazovateli_davleniya_iek_/",
+        "image": "/assets/sub-8-3.png",
+        "title": "Преобразователи Давления IEK"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/ustroystva_plavnogo_puska_iek_/",
+        "image": "/assets/sub-8-4.png",
+        "title": "Устройства Плавного Пуска IEK"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/bloki_pitaniya_schneider_electric_iek/",
+        "image": "/assets/sub-8-5.png",
+        "title": "Блоки питания Schneider Electric, IEK"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/avtomaty_svetochuvstvitelnye/",
+        "image": "/assets/sub-8-6.png",
+        "title": "Автоматы светочувствительные"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/ogranichiteli_moshchnosti/",
+        "image": "/assets/sub-8-7.png",
+        "title": "Ограничители мощности"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/pereklyuchateli_faz/",
+        "image": "/assets/sub-8-8.png",
+        "title": "Переключатели фаз"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/regulyatory_temperatury/",
+        "image": "/assets/sub-8-9.png",
+        "title": "Регуляторы температуры"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/ukazateli_moshchnosti_napryazheniya/",
+        "image": "/assets/sub-8-10.png",
+        "title": "Указатели мощности,напряжения"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/ustroystva_upravleniya_rezervnym_pitaniem/",
+        "image": "/assets/sub-8-11.png",
+        "title": "Устройства управления резервным питанием"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/preobrazovatel_chastoty_oni_schneider_iek/",
+        "image": "/assets/sub-8-12.png",
+        "title": "Преобразователь частоты"
+      },
+      {
+        "path": "/catalog/avtomatizatsiya/programmiruemoe_rele/",
+        "image": "/assets/sub-8-13.png",
+        "title": "Программируемое реле"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/videonablyudenie_skud_signalizatsiya/",
+    "image": "/assets/category-9.png",
+    "title": "Видеонаблюдение / СКУД / Сигнализация",
+    "children": [
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/it_oborudovanie/",
+        "image": "/assets/sub-9-0.png",
+        "title": "IT оборудование"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/monitory/",
+        "image": "/assets/sub-9-1.png",
+        "title": "Мониторы"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/kabel_dlya_videonablyudeniya_rg/",
+        "image": "/assets/sub-9-2.png",
+        "title": "Кабель для видеонаблюдения RG"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/video_audio_domofony_paneli/",
+        "image": "/assets/sub-9-3.png",
+        "title": "Видео / Аудио Домофоны, Панели"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/videokamery/",
+        "image": "/assets/sub-9-4.png",
+        "title": "Видеокамеры"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/videoregistratory/",
+        "image": "/assets/sub-9-5.png",
+        "title": "Видеорегистраторы"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/dovodchiki_dvernye_zamki_/",
+        "image": "/assets/sub-9-6.png",
+        "title": "Доводчики Дверные, Замки"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/kommutatory_/",
+        "image": "/assets/sub-9-7.png",
+        "title": "Коммутаторы"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/adaptery_razvetviteli_razemy/",
+        "image": "/assets/sub-9-8.png",
+        "title": "Адаптеры / Разветвители / Разъемы"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/signalizatsiya/",
+        "image": "/assets/sub-9-9.png",
+        "title": "Сигнализация"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/zhestkie_diski/",
+        "image": "/assets/sub-9-10.png",
+        "title": "Жесткие Диски"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/umnyy_dom_datchiki_pulty_upravleniya_rozetki/",
+        "image": "/assets/sub-9-11.png",
+        "title": "Умный дом (Датчики,Пульты Управления,Розетки)"
+      },
+      {
+        "path": "/catalog/videonablyudenie_skud_signalizatsiya/prochee_ibp_akkumulyatory_splitter/",
+        "image": "/assets/sub-9-12.png",
+        "title": "Прочее (ИБП Аккумуляторы Сплиттер)"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/instrument_kip/",
+    "image": "/assets/category-10.png",
+    "title": "Инструмент / КИП",
+    "children": [
+      {
+        "path": "/catalog/instrument_kip/ukazateli_vysokogo_napryazheniya/",
+        "image": "/assets/sub-10-0.png",
+        "title": "Указатели высокого напряжения"
+      },
+      {
+        "path": "/catalog/instrument_kip/bosch_elektroinstrument_osnastka/",
+        "image": "/assets/sub-10-1.png",
+        "title": "BOSCH Электроинструмент / Оснастка"
+      },
+      {
+        "path": "/catalog/instrument_kip/kip_schetchiki_ampermetry_multimetry/",
+        "image": "/assets/sub-10-2.png",
+        "title": "КИП Счетчики, Амперметры, Мультиметры"
+      },
+      {
+        "path": "/catalog/instrument_kip/ruchnoy_instrument_3/",
+        "image": "/assets/sub-10-3.png",
+        "title": "Ручной инструмент"
+      },
+      {
+        "path": "/catalog/instrument_kip/zashchitnoe_oborudovanie_ekipirovka_dlya_elektrika/",
+        "image": "/assets/sub-10-4.png",
+        "title": "Защитное оборудование / Экипировка для Электрика"
+      }
+    ]
+  },
+  {
+    "path": "/catalog/korzina_elektrika/",
+    "image": "/assets/category-11.png",
+    "title": "Корзина Электрика",
+    "children": [
+      {
+        "path": "/catalog/korzina_elektrika/izolenta_i_termousadka/",
+        "image": "/assets/sub-11-0.png",
+        "title": "Изолента и Термоусадка"
+      },
+      {
+        "path": "/catalog/korzina_elektrika/kabel_provod_2/",
+        "image": "/assets/sub-11-1.png",
+        "title": "Кабель-Провод"
+      },
+      {
+        "path": "/catalog/korzina_elektrika/instrumenty_1/",
+        "image": "/assets/sub-11-2.png",
+        "title": "Инструменты"
+      },
+      {
+        "path": "/catalog/korzina_elektrika/klemmy_gilzy_nakonechniki/",
+        "image": "/assets/sub-11-3.png",
+        "title": "Клеммы, гильзы, наконечники"
+      },
+      {
+        "path": "/catalog/korzina_elektrika/korobki_i_podrozetniki/",
+        "image": "/assets/sub-11-4.png",
+        "title": "Коробки и подрозетники"
+      },
+      {
+        "path": "/catalog/korzina_elektrika/krepezhi_khomuty_ploshchadki/",
+        "image": "/assets/sub-11-5.png",
+        "title": "Крепежи - хомуты, площадки"
+      },
+      {
+        "path": "/catalog/korzina_elektrika/truby_i_aksessuary_dlya_napolnogo_montazha/",
+        "image": "/assets/sub-11-6.png",
+        "title": "Трубы и аксессуары для напольного монтажа"
+      },
+      {
+        "path": "/catalog/korzina_elektrika/truby_i_aksessuary_dlya_potolochnogo_montazha/",
+        "image": "/assets/sub-11-7.png",
+        "title": "Трубы и аксессуары для потолочного монтажа"
+      }
+    ]
+  }
+]
