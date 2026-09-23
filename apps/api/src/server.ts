@@ -1,5 +1,7 @@
 import Fastify from 'fastify';
+import multipart from '@fastify/multipart';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { AttachmentError, extractAttachmentCandidates, MAX_ATTACHMENT_BYTES } from './attachments.js';
 import { answerPurchaseTerms, detectsPurchaseTerms } from './policy.js';
 import {
   createDemoCatalog,
@@ -145,6 +147,7 @@ export function buildApp(options: {
   const sessions = new Map<string, Session>();
   const sessionFor = new WeakMap<object, Session>();
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 10_000, genReqId: () => randomUUID() });
+  app.register(multipart, { limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1, fields: 0, parts: 1 } });
 
   app.addHook('onRequest', async (request, reply) => {
     reply.header('Cache-Control', 'no-store');
@@ -250,6 +253,17 @@ export function buildApp(options: {
     return confirm(sessionOf(request), body.proposalId, body.idempotencyKey, String(request.id));
   });
 
+  app.post('/api/attachments', async (request) => {
+    verifyMutation(request);
+    if (!request.isMultipart()) throw new ApiFailure(415, 'UNSUPPORTED_FILE', 'Ожидается один файл в multipart/form-data.');
+    const file = await request.file();
+    if (!file || file.fieldname !== 'file') throw new ApiFailure(400, 'INVALID_INPUT', 'Передайте один файл в поле file.');
+    const result = await extractAttachmentCandidates({
+      buffer: await file.toBuffer(), filename: file.filename, mimeType: file.mimetype,
+    });
+    return { ...result, requestId: String(request.id) };
+  });
+
   app.post('/api/chat', async (request) => {
     verifyMutation(request);
     const body = request.body;
@@ -321,14 +335,15 @@ export function buildApp(options: {
 
   app.setErrorHandler((error, request, reply) => {
     const failure = error instanceof ApiFailure ? error : null;
+    const attachmentFailure = error instanceof AttachmentError ? error : null;
     const errorStatus = isRecord(error) && typeof error.statusCode === 'number' ? error.statusCode : 503;
     const catalogStatus = error instanceof CatalogError
       ? error.code === 'CATALOG_UNAUTHORIZED' ? 403 : error.code === 'CATALOG_RATE_LIMITED' ? 429 : 503
       : null;
-    const status = failure?.statusCode || catalogStatus || (errorStatus < 500 ? errorStatus : 503);
-    const code = failure?.code || (error instanceof CatalogError ? error.code :
+    const status = failure?.statusCode || attachmentFailure?.statusCode || catalogStatus || (errorStatus < 500 ? errorStatus : 503);
+    const code = failure?.code || attachmentFailure?.code || (error instanceof CatalogError ? error.code :
       status === 413 ? 'PAYLOAD_TOO_LARGE' : status === 400 ? 'INVALID_INPUT' : 'SERVICE_UNAVAILABLE');
-    const message = failure?.message || (error instanceof CatalogError ? error.message :
+    const message = failure?.message || attachmentFailure?.message || (error instanceof CatalogError ? error.message :
       status === 503 ? 'Сервис временно недоступен. Повторите позже.' : 'Некорректный запрос.');
     const detail = failure?.available === undefined ? {} : { available: failure.available };
     reply.code(status).send({ error: { code, message, requestId: String(request.id), ...detail } });
