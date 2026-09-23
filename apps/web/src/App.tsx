@@ -55,6 +55,7 @@ function ProposalCard({ pending, busy, onConfirm, onRetry }: { pending: Pending;
     {expired && <p className="inline-error">Срок предложения истёк. Подготовьте новое.</p>}
     {pending.error && <p role="alert" className="inline-error">{pending.error}</p>}
     {pending.available !== undefined && pending.available > 0 && found[0]?.product && <button type="button" className="secondary small" onClick={() => onRetry(`Добавь ${pending.available} шт. ${found[0].product!.sku}`)}>Подготовить {pending.available} шт. для нового подтверждения</button>}
+    {['PROPOSAL_NOT_FOUND', 'PROPOSAL_EXPIRED', 'SESSION_REQUIRED'].includes(pending.errorCode || '') && found[0]?.product && <button type="button" className="secondary small" onClick={() => onRetry(`Добавь ${found[0].item.quantity} шт. ${found[0].product!.sku}`)}>Подготовить предложение заново</button>}
     <button type="button" className="primary confirm" disabled={busy || unverifiable || expired || Boolean(pending.error && pending.errorCode !== 'NETWORK' && pending.errorCode !== 'TIMEOUT')} onClick={onConfirm}>{busy ? 'Проверяем остаток…' : pending.error ? 'Повторить подтверждение' : 'Подтвердить и добавить'}</button>
   </section>;
 }
@@ -84,7 +85,12 @@ function ChatPage() {
   const [success, setSuccess] = useState<Cart | null>(null);
   const confirmLock = useRef(false);
   const endRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { api.cart().then((cart) => setCartCount(cart.itemCount)).catch(() => {}); }, []);
+  useEffect(() => {
+    const onCart = (event: Event) => setCartCount((event as CustomEvent<Cart>).detail.itemCount);
+    window.addEventListener('ekt-cart-snapshot', onCart);
+    api.cart().then((cart) => setCartCount(cart.itemCount)).catch(() => {});
+    return () => window.removeEventListener('ekt-cart-snapshot', onCart);
+  }, []);
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' }); }, [messages, pending, success, error]);
 
   async function send(value = input) {
