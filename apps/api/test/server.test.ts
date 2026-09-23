@@ -254,6 +254,28 @@ test('T3: purchase terms cite the public source and state both unknowns', async 
   }
 });
 
+test('product and purchase terms in one question preserve both catalog and policy facts', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  for (const [locale, message, termsText] of [
+    ['ru', 'Есть ABC-123 и какая доставка и оплата?', /Минимальная партия.*не указана/],
+    ['kk', 'ABC-123 бар ма және жеткізу мен төлем қандай?', /Ең аз партия.*көрсетілмеген/],
+  ] as const) {
+    const response = await chat(app, session, message, locale);
+    assert.equal(response.statusCode, 200);
+    const body = response.json();
+    assert.equal(body.products[0].sku, 'ABC-123');
+    assert.equal(body.products[0].stock.available, 4);
+    assert.equal(body.sourceUrl, 'https://ekt.kz/checkout-delivery/');
+    assert.match(body.reply, termsText);
+    assert.match(body.reply, /https:\/\/ekt\.kz\/checkout-delivery\//);
+    assert.equal(body.proposal, null);
+    assert.equal(body.cartChanged, false);
+  }
+});
+
 test('T4/T5/T7: proposal leaves cart untouched; explicit confirm adds once and /cart reflects it', async (t) => {
   const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
   t.after(() => app.close());
@@ -297,6 +319,106 @@ test('T4/T5/T7: proposal leaves cart untouched; explicit confirm adds once and /
   assert.equal(freshKazakhPage.statusCode, 200);
   assert.match(freshKazakhPage.body, /Себет бос/);
   assert.ok(freshKazakhPage.headers['set-cookie']);
+});
+
+test('negative cart requests never create a proposal or change the cart', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  for (const message of ['Не добавь ABC-123', 'Не добавляй ABC-123', 'Отмена, не добавляй ABC-123']) {
+    const response = await chat(app, session, message);
+    assert.equal(response.statusCode, 200, message);
+    assert.equal(response.json().proposal, null, message);
+    assert.equal(response.json().cartChanged, false, message);
+  }
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
+test('word quantities are understood and invalid or fractional counts never become one', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const word = await chat(app, session, 'Добавь два ABC-123');
+  assert.equal(word.statusCode, 200);
+  assert.equal(word.json().proposal.items[0].quantity, 2);
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+
+  for (const message of ['Добавь -2 ABC-123', 'Добавь 1.5 ABC-123', 'Добавь 0 ABC-123', 'Добавь полтора ABC-123']) {
+    const response = await chat(app, session, message);
+    assert.equal(response.statusCode, 400, message);
+    assert.equal(response.json().error.code, 'INVALID_QUANTITY', message);
+    assert.equal((await cart(app, session)).json().itemCount, 0);
+  }
+
+  await chat(app, session, 'Есть ли ABC-123?');
+  const followup = await chat(app, session, 'Добавь два');
+  assert.equal(followup.statusCode, 200);
+  assert.equal(followup.json().proposal.items[0].quantity, 2);
+
+  const kazakh = await chat(app, session, 'ABC-123 себетке екі дана қос', 'kk');
+  assert.equal(kazakh.statusCode, 200);
+  assert.equal(kazakh.json().proposal.items[0].quantity, 2);
+});
+
+test('two SKU request proposes and confirms both items exactly once', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const proposed = await chat(app, session, 'Добавь 2 ABC-123 и 1 ABC-124');
+  assert.equal(proposed.statusCode, 200);
+  assert.deepEqual(proposed.json().proposal.items.map((item: { productId: string; quantity: number }) => item.quantity), [2, 1]);
+  assert.equal(proposed.json().products.length, 2);
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+
+  const first = await confirm(app, session, proposed.json().proposal.id, 'multi-item-001');
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.json().cart.itemCount, 3);
+  assert.deepEqual(first.json().cart.items.map((item: { sku: string; quantity: number }) => [item.sku, item.quantity]),
+    [['ABC-123', 2], ['ABC-124', 1]]);
+  assert.deepEqual((await confirm(app, session, proposed.json().proposal.id, 'multi-item-001')).json(), first.json());
+  assert.equal((await cart(app, session)).json().itemCount, 3);
+});
+
+test('multi-item confirmation validates every fresh stock before any cart mutation', async (t) => {
+  const base = createDemoCatalog();
+  let secondAvailable = 3;
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    findBySku: (sku) => base.findBySku(sku),
+    async getById(id) {
+      const product = await base.getById(id);
+      return product && id === 'demo-2'
+        ? { ...product, stock: { available: secondAvailable, status: secondAvailable > 0 ? 'in_stock' : 'out_of_stock' } }
+        : product;
+    },
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const proposed = await chat(app, session, 'Добавь 2 ABC-123 и 1 ABC-124');
+  assert.equal(proposed.statusCode, 200);
+  secondAvailable = 0;
+  const failed = await confirm(app, session, proposed.json().proposal.id, 'multi-item-stock-001');
+  assert.equal(failed.statusCode, 409);
+  assert.equal(failed.json().error.code, 'STOCK_UNAVAILABLE');
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
+test('missing second SKU never silently proposes only the first', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const response = await chat(app, session, 'Добавь 2 ABC-123 и 1 ABC-999');
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().proposal, null);
+  assert.match(response.json().reply, /ABC-999/);
+  assert.equal((await cart(app, session)).json().itemCount, 0);
 });
 
 test('T6: confirm rereads mutable stock and rejects an outdated proposal', async (t) => {

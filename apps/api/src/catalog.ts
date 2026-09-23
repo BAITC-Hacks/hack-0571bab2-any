@@ -1,5 +1,5 @@
 /** Catalog facts are read on the server; this module never writes to ekt.kz. */
-import type { CatalogIndex } from './catalogIndex.js';
+import { CatalogIndex } from './catalogIndex.js';
 export type CatalogSource = 'catalog_live' | 'catalog_demo';
 
 export type Product = {
@@ -148,7 +148,34 @@ const DEMO_PRODUCTS: Product[] = [
     stock: stock(3),
     source: 'catalog_demo',
   },
+  {
+    id: 'demo-cable', sku: 'DEMO-CABLE-10', name: 'Демо кабель медный DEMO-CABLE-10',
+    category: 'Кабель', characteristics: { СЕЧЕНИЕ: '3 × 2,5 мм²', МАТЕРИАЛ: 'медь' },
+    certificateUrl: null, price: null, stock: stock(12), source: 'catalog_demo',
+  },
+  {
+    id: 'demo-socket', sku: 'DEMO-SOCKET-16', name: 'Демо розетка DEMO-SOCKET-16',
+    category: 'Розетка', characteristics: { NOMINALNYY_TOK: '16 А', TIP_USTANOVKI: 'встраиваемая' },
+    certificateUrl: null, price: null, stock: stock(6), source: 'catalog_demo',
+  },
+  {
+    id: 'demo-light', sku: 'DEMO-LIGHT-12', name: 'Демо светильник DEMO-LIGHT-12',
+    category: 'Светильник', characteristics: { МОЩНОСТЬ: '12 Вт', NOMINALNOE_NAPRYAZHENIE: '230 В' },
+    certificateUrl: null, price: null, stock: stock(9), source: 'catalog_demo',
+  },
+  {
+    id: 'demo-switch', sku: 'DEMO-SWITCH-1', name: 'Демо выключатель DEMO-SWITCH-1',
+    category: 'Выключатель', characteristics: { КЛАВИШИ: '1', TIP_USTANOVKI: 'встраиваемый' },
+    certificateUrl: null, price: null, stock: stock(7), source: 'catalog_demo',
+  },
 ];
+
+/** Search hints only; all customer-facing facts are reread from the demo provider. */
+export function createDemoCatalogIndex(): CatalogIndex {
+  return new CatalogIndex(DEMO_PRODUCTS.map(({ id, sku, name, category }) => ({
+    id, sku, name, category: category ?? null,
+  })));
+}
 
 export function createDemoCatalog(): CatalogProvider {
   return {
@@ -307,9 +334,9 @@ export function createLiveCatalog(config: {
     if (!isObject(raw) || !Array.isArray(raw.items) || !raw.items.every(isObject)) {
       throw new CatalogError('CATALOG_INVALID_RESPONSE');
     }
-    const perPage = raw.per_page;
-    const complete = raw.items.length === 0
-      || (typeof perPage === 'number' && Number.isSafeInteger(perPage) && perPage > 0 && raw.items.length < perPage);
+    // The partner API can return a short non-final page. Only an empty page
+    // signals an end; otherwise a bounded lookup must report incomplete.
+    const complete = raw.items.length === 0;
     return { items: raw.items, complete };
   }
 

@@ -1,6 +1,7 @@
 import { config } from 'dotenv';
 import { buildApp } from './server.js';
 import { loadCatalogSnapshot } from './catalogSnapshot.js';
+import { createDemoCatalogIndex } from './catalog.js';
 
 config({ quiet: true });
 
@@ -16,6 +17,8 @@ if (process.env.CATALOG_MODE === 'live') {
   } catch {
     console.error('Local catalog index unavailable; using bounded live lookup');
   }
+} else {
+  catalogIndex = createDemoCatalogIndex();
 }
 const app = buildApp({ catalogIndex });
 try {

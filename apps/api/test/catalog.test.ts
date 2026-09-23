@@ -97,6 +97,43 @@ test('bounded five-page search reports incomplete rather than inventing an absen
   assert.deepEqual(requests, [1, 2, 3, 4, 5].map((page) => `/api/products?page=${page}`));
 });
 
+test('short non-final list page cannot hide a product on the next page', async (t) => {
+  const requests: string[] = [];
+  const baseUrl = await localCatalog(t, (request, response) => {
+    requests.push(request.url ?? '');
+    if (request.url === '/api/products?page=1') {
+      json(response, { page: 1, per_page: 20, count: 2,
+        items: [{ id: 18, article: 'OTHER-18', name: 'Другой товар' }] });
+    } else if (request.url === '/api/products?page=2') {
+      json(response, { page: 2, per_page: 20, count: 2,
+        items: [{ id: 17, article: 'ABC-123', name: detail.name }] });
+    } else if (request.url === '/api/products/detail?id=17') {
+      json(response, detail);
+    } else json(response, { error: 'unexpected path' }, 404);
+  });
+
+  const product = await liveCatalog(baseUrl).findBySku('ABC-123');
+  assert.equal(product?.id, '17');
+  assert.deepEqual(requests, ['/api/products?page=1', '/api/products?page=2', '/api/products/detail?id=17']);
+});
+
+test('short non-final list pages cannot prove an unindexed SKU is absent', async (t) => {
+  const requests: string[] = [];
+  const baseUrl = await localCatalog(t, (request, response) => {
+    requests.push(request.url ?? '');
+    const page = Number(new URL(request.url ?? '/', 'http://127.0.0.1').searchParams.get('page'));
+    json(response, { page, per_page: 20, count: 100,
+      items: [{ id: page, article: `OTHER-${page}`, name: 'Другой товар' }] });
+  });
+
+  await assert.rejects(liveCatalog(baseUrl).findBySku('ABC-123'), (error: unknown) => {
+    assert.ok(error instanceof CatalogError);
+    assert.equal(error.code, 'CATALOG_SEARCH_INCOMPLETE');
+    return true;
+  });
+  assert.deepEqual(requests, [1, 2, 3, 4, 5].map((page) => `/api/products?page=${page}`));
+});
+
 test('missing category prevents live analog suggestions and avoids further catalog requests', async (t) => {
   const requests: string[] = [];
   const baseUrl = await localCatalog(t, (request, response) => {
@@ -126,6 +163,8 @@ test('live analog requires the same category, all four critical properties, and 
         { id: 19, article: 'ABC-125' },
         { id: 20, article: 'ABC-126' },
       ] });
+    } else if (request.url === '/api/products?page=2') {
+      json(response, { page: 2, per_page: 20, count: 4, items: [] });
     } else if (request.url === '/api/products/detail?id=18') {
       json(response, { ...categorizedDetail, id: 18, article: 'ABC-124', quantity: 3 });
     } else if (request.url === '/api/products/detail?id=19') {
@@ -148,6 +187,7 @@ test('live analog requires the same category, all four critical properties, and 
   assert.deepEqual(requests, [
     '/api/products/detail?id=17', '/api/products?page=1',
     '/api/products/detail?id=18', '/api/products/detail?id=19', '/api/products/detail?id=20',
+    '/api/products?page=2',
   ]);
 });
 
@@ -193,6 +233,8 @@ test('partial index with no compatible analog falls back to bounded live pages',
       json(response, { page: 1, per_page: 20, count: 2, items: [
         { id: 17, article: 'ABC-123' }, { id: 18, article: 'ABC-124' },
       ] });
+    } else if (request.url === '/api/products?page=2') {
+      json(response, { page: 2, per_page: 20, count: 2, items: [] });
     } else if (request.url === '/api/products/detail?id=18') {
       json(response, { ...source, id: 18, article: 'ABC-124', quantity: 3 });
     } else json(response, { error: 'unexpected path' }, 404);
@@ -205,5 +247,7 @@ test('partial index with no compatible analog falls back to bounded live pages',
     source: 'catalog_live', certificateUrl: null, price: null });
   assert.equal(analogs.length, 1);
   assert.equal(analogs[0]?.product.sku, 'ABC-124');
-  assert.deepEqual(requests, ['/api/products/detail?id=88', '/api/products?page=1', '/api/products/detail?id=18']);
+  assert.deepEqual(requests, [
+    '/api/products/detail?id=88', '/api/products?page=1', '/api/products/detail?id=18', '/api/products?page=2',
+  ]);
 });

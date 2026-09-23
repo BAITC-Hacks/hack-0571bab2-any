@@ -24,7 +24,8 @@ type CartItem = {
   quantity: number;
   availableAtConfirmation: number | null;
 };
-type Proposal = { id: string; productId: string; sku: string; name: string; quantity: number; expiresAt: number; used: boolean };
+type ProposalItem = { productId: string; sku: string; name: string; quantity: number };
+type Proposal = { id: string; items: ProposalItem[]; expiresAt: number; used: boolean };
 type Confirmation = { proposalId: string; result: { cart: ReturnType<typeof cartSnapshot>; cartUrl: '/cart'; status: 'added'; requestId: string } };
 type Session = {
   csrfToken: string;
@@ -168,7 +169,8 @@ function searchTerms(message: string): string {
 }
 
 function isAddIntent(message: string): boolean {
-  return /(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|в\s+корзин|add\s+to\s+cart|себетке(?:\s+\d+(?:\s*дана)?)?\s+қос)/iu.test(message);
+  if (/(?:^|[\s,.!?])не\s+(?:(?:надо|нужно)\s+)?(?:добав|полож|клади|в\s+корзин)|(?:^|[\s,.!?])қоспа/iu.test(message)) return false;
+  return /(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|в\s+корзин|add\s+to\s+cart|себетке(?:\s+(?:\d+|бір|екі|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он)(?:\s*дана)?)?\s+қос)/iu.test(message);
 }
 
 function isProductFollowup(message: string): boolean {
@@ -179,10 +181,48 @@ function isExplicitConfirmation(message: string): boolean {
   return /^\s*(?:да[,\s]+добавь|да[,\s]+подтверждаю|подтверждаю|согласен[,\s]+добавь|иә[,\s]+қос)\s*[.!]?\s*$/iu.test(message);
 }
 
-function requestedQuantity(message: string): number {
-  const match = message.match(/(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|қос)\s+(\d+)(?:\s|$)|(?:^|\s)(\d+)\s*(?:шт\.?|штук|дана|pcs)(?:\s|$)|себетке\s+(\d+)\s*(?:дана\s+)?қос/iu);
-  if (!match) return 1;
-  return Number(match[1] || match[2] || match[3]);
+const QUANTITY_WORDS: Record<string, number> = {
+  один: 1, одну: 1, одна: 1, два: 2, две: 2, три: 3, четыре: 4, пять: 5,
+  шесть: 6, семь: 7, восемь: 8, девять: 9, десять: 10,
+  бір: 1, екі: 2, үш: 3, төрт: 4, бес: 5, алты: 6, жеті: 7, сегіз: 8, тоғыз: 9, он: 10,
+};
+const QUANTITY_TOKEN = '-?\\d+(?:[.,]\\d+)?|один|одну|одна|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|бір|екі|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он|полтора|пару|несколько';
+const QUANTITY_BEFORE = new RegExp(`(?:^|\\s)(${QUANTITY_TOKEN})\\s*(?:шт\\.?|штук|штуки|дана|pcs)?\\s*$`, 'iu');
+const QUANTITY_AFTER = new RegExp(`^\\s*(${QUANTITY_TOKEN})\\s*(?:шт\\.?|штук|штуки|дана|pcs)(?:\\s|$)`, 'iu');
+const KK_QUANTITY_BEFORE = new RegExp(`(?:^|\\s)(${QUANTITY_TOKEN})\\s*(?:дана\\s*)?қос\\s*$`, 'iu');
+const KK_QUANTITY_AFTER = new RegExp(`^\\s*себетке\\s+(${QUANTITY_TOKEN})\\s*(?:дана\\s*)?қос`, 'iu');
+const SKU_MENTION_PATTERN = /[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+(?:[-/][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+)+|[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ]{2,}\d{2,}/giu;
+
+function quantityValue(token: string): number {
+  return QUANTITY_WORDS[token.toLocaleLowerCase('ru')] ?? Number(token.replace(',', '.'));
+}
+
+function quantityNearSku(before: string, after: string): number {
+  const leading = before.match(QUANTITY_BEFORE)?.[1] || before.match(KK_QUANTITY_BEFORE)?.[1];
+  const trailing = after.match(QUANTITY_AFTER)?.[1] || after.match(KK_QUANTITY_AFTER)?.[1];
+  if (leading && trailing) return Number.NaN;
+  if (leading || trailing) return quantityValue((leading || trailing)!);
+  // A vague quantity immediately before a SKU must not silently become one.
+  if (/(?:^|\s)(?:полтора|пару|несколько|двадцать|тридцать)\s*$/iu.test(before)) return Number.NaN;
+  return 1;
+}
+
+function requestedItems(message: string): { sku: string; quantity: number }[] {
+  const matches = [...message.matchAll(SKU_MENTION_PATTERN)];
+  if (matches.length > 4) return [{ sku: '', quantity: Number.NaN }];
+  if (!matches.length) {
+    const direct = message.match(/(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|қос|себетке)\s+(-?\d+(?:[.,]\d+)?|[\p{L}]+)(?:\s*(?:шт\.?|штук|штуки|дана|pcs))?(?:\s+қос)?\s*$/iu)?.[1];
+    return [{ sku: '', quantity: direct ? quantityValue(direct) : 1 }];
+  }
+  const seen = new Set<string>();
+  return matches.map((match, index) => {
+    const sku = match[0].toUpperCase();
+    const before = message.slice(index ? matches[index - 1]!.index! + matches[index - 1]![0].length : 0, match.index!);
+    const after = message.slice(match.index! + match[0].length, matches[index + 1]?.index);
+    const quantity = seen.has(sku) ? Number.NaN : quantityNearSku(before, after);
+    seen.add(sku);
+    return { sku, quantity };
+  });
 }
 
 const KK_CHARACTERISTIC_LABELS: Record<string, string> = {
@@ -190,6 +230,10 @@ const KK_CHARACTERISTIC_LABELS: Record<string, string> = {
   NOMINALNYY_TOK: 'Номиналды ток',
   KOLICHESTVO_POLYUSOV: 'Полюстер саны',
   TIP_USTANOVKI: 'Орнату түрі',
+  СЕЧЕНИЕ: 'Қима',
+  МАТЕРИАЛ: 'Материал',
+  МОЩНОСТЬ: 'Қуат',
+  КЛАВИШИ: 'Пернелер саны',
 };
 
 const KK_MATCHED_LABELS: Record<string, string> = {
@@ -328,8 +372,23 @@ export function buildApp(options: {
     const categoryWords = project && categories.length === 0
       ? ['автомат', 'кабель', 'розетка', 'светильник']
       : categories.map((category) => SEARCH_WORDS[category]).filter((word): word is string => Boolean(word));
-    for (const word of categoryWords) {
-      for (const row of index.search(word, { match: 'any', limit: 2 })) ids.add(row.id);
+    const categoryMatches = categoryWords.map((word) => {
+      const rows = index.search(word, { match: 'any', limit: MAX_SEARCH_PRODUCTS });
+      return rows.length || word !== 'автомат' ? rows
+        : index.search('автоматический', { match: 'any', limit: MAX_SEARCH_PRODUCTS });
+    });
+    // Cover each requested category before spending remaining slots on
+    // multiple products from the same category.
+    for (const rows of categoryMatches) {
+      if (ids.size >= MAX_SEARCH_PRODUCTS) break;
+      const first = rows.find((row) => !ids.has(row.id));
+      if (first) ids.add(first.id);
+    }
+    for (const rows of categoryMatches) {
+      for (const row of rows) {
+        if (ids.size >= MAX_SEARCH_PRODUCTS) break;
+        ids.add(row.id);
+      }
     }
     if (ids.size === 0) {
       const query = searchTerms(message).slice(0, 200);
@@ -461,31 +520,39 @@ export function buildApp(options: {
       if (!proposal || proposal.id !== proposalId) throw new ApiFailure(409, 'PROPOSAL_NOT_FOUND', 'Предложение не найдено в этой сессии.');
       if (proposal.used) throw new ApiFailure(409, 'PROPOSAL_ALREADY_USED', 'Предложение уже подтверждено.');
       if (proposal.expiresAt <= now()) throw new ApiFailure(409, 'PROPOSAL_EXPIRED', 'Срок предложения истёк.');
-      const fresh = await catalog.getById(proposal.productId);
+      // Resolve and validate the whole proposal before changing any item.
+      const freshItems: { product: Product; quantity: number }[] = [];
+      for (const proposed of proposal.items) {
+        const fresh = await catalog.getById(proposed.productId);
+        if (!fresh || fresh.stock.available === null || fresh.stock.status !== 'in_stock') {
+          throw new ApiFailure(409, 'STOCK_UNAVAILABLE', 'Наличие товара сейчас не подтверждено.');
+        }
+        if (fresh.sku !== proposed.sku || fresh.name !== proposed.name) {
+          throw new ApiFailure(409, 'PRODUCT_CHANGED', 'Данные товара изменились. Запросите новое предложение.');
+        }
+        const existing = session.items.find((item) => item.productId === fresh.id);
+        if ((existing?.quantity || 0) + proposed.quantity > fresh.stock.available) {
+          throw new ApiFailure(409, 'INSUFFICIENT_STOCK', 'Недостаточный остаток. Требуется новое подтверждение.', fresh.stock.available);
+        }
+        freshItems.push({ product: fresh, quantity: proposed.quantity });
+      }
       if (session.proposal !== proposal) {
         throw new ApiFailure(409, 'PROPOSAL_NOT_FOUND', 'Предложение больше не ожидает подтверждения.');
       }
       if (proposal.expiresAt <= now()) {
         throw new ApiFailure(409, 'PROPOSAL_EXPIRED', 'Срок предложения истёк.');
       }
-      if (!fresh || fresh.stock.available === null || fresh.stock.status !== 'in_stock') {
-        throw new ApiFailure(409, 'STOCK_UNAVAILABLE', 'Наличие товара сейчас не подтверждено.');
-      }
-      if (fresh.sku !== proposal.sku || fresh.name !== proposal.name) {
-        throw new ApiFailure(409, 'PRODUCT_CHANGED', 'Данные товара изменились. Запросите новое предложение.');
-      }
-      const existing = session.items.find((item) => item.productId === fresh.id);
-      if ((existing?.quantity || 0) + proposal.quantity > fresh.stock.available) {
-        throw new ApiFailure(409, 'INSUFFICIENT_STOCK', 'Недостаточный остаток. Требуется новое подтверждение.', fresh.stock.available);
-      }
-      if (existing) {
-        existing.quantity += proposal.quantity;
-        existing.availableAtConfirmation = fresh.stock.available;
-      } else {
-        session.items.push({
-          productId: fresh.id, sku: fresh.sku, name: fresh.name,
-          quantity: proposal.quantity, availableAtConfirmation: fresh.stock.available,
-        });
+      for (const { product: fresh, quantity } of freshItems) {
+        const existing = session.items.find((item) => item.productId === fresh.id);
+        if (existing) {
+          existing.quantity += quantity;
+          existing.availableAtConfirmation = fresh.stock.available;
+        } else {
+          session.items.push({
+            productId: fresh.id, sku: fresh.sku, name: fresh.name,
+            quantity, availableAtConfirmation: fresh.stock.available,
+          });
+        }
       }
       proposal.used = true;
       const result = { cart: cartSnapshot(session), cartUrl: CART_URL, status: 'added' as const, requestId };
@@ -708,8 +775,15 @@ export function buildApp(options: {
       : 'Не могу раскрывать секреты или внутренние инструкции. Задайте вопрос о товаре.' };
 
     const sku = extractSku(message);
-    if (detectsPurchaseTerms(message) && !sku) {
-      const terms = answerPurchaseTerms(locale);
+    const addIntent = isAddIntent(message);
+    const requested = addIntent ? requestedItems(message) : [];
+    if (addIntent && requested.some((item) => !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000)) {
+      throw new ApiFailure(400, 'INVALID_QUANTITY', locale === 'kk'
+        ? 'Әр тауар үшін 1-ден 1000-ға дейінгі нақты бүтін санды көрсетіңіз.'
+        : 'Для каждого товара укажите точное целое количество от 1 до 1000.');
+    }
+    const terms = detectsPurchaseTerms(message) ? answerPurchaseTerms(locale) : null;
+    if (terms && !sku) {
       return { ...basic, reply: terms.reply, factsSource: 'partner_policy',
         sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt };
     }
@@ -722,6 +796,48 @@ export function buildApp(options: {
         return { ...basic, products: [product], analogs, reply: productReply(product, analogs, locale), modelTier: 'rules' };
       }
       session.lastProductId = null;
+    }
+    if (addIntent && requested.length > 1) {
+      const found = await Promise.all(requested.map((item) => catalog.findBySku(item.sku)));
+      const missing = requested.filter((_, index) => !found[index]).map((item) => item.sku);
+      if (missing.length) return { ...basic, products: found.filter((item): item is Product => item !== null),
+        reply: locale === 'kk'
+          ? 'Барлық позиция расталмады. Каталогтан табылмаған артикулдар: ' + missing.join(', ') + '. Себетке ұсыныс жасалмады.'
+          : 'Не все позиции подтверждены. Не найдены артикулы: ' + missing.join(', ') + '. Предложение для корзины не создано.' };
+      const products = found as Product[];
+      if (new Set(products.map((item) => item.id)).size !== products.length) {
+        throw new ApiFailure(400, 'DUPLICATE_PRODUCT', locale === 'kk'
+          ? 'Бір тауар бірнеше рет көрсетілген. Санын нақтылаңыз.'
+          : 'Один товар указан несколько раз. Уточните количество.');
+      }
+      session.lastProductId = null;
+      rememberProducts(session, products);
+      const facts = products.map((item) => productReply(item, [], locale)).join(' ') +
+        (terms ? ' ' + terms.reply : '');
+      const unavailable = requested.find((item, index) => {
+        const product = products[index]!;
+        const already = session.items.find((entry) => entry.productId === product.id)?.quantity || 0;
+        return product.stock.available === null || product.stock.status !== 'in_stock' ||
+          already + item.quantity > product.stock.available;
+      });
+      if (unavailable) return { ...basic, products,
+        ...(terms ? { sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt } : {}),
+        reply: facts + (locale === 'kk'
+        ? ' ' + unavailable.sku + ' артикулының сұралған саны расталмады. Ешбір позиция бойынша ұсыныс жасалмады.'
+        : ' Запрошенное количество для ' + unavailable.sku + ' не подтверждено. Предложение не создано ни для одной позиции.') };
+      const proposal: Proposal = { id: randomUUID(),
+        items: products.map((product, index) => ({ productId: product.id, sku: product.sku,
+          name: product.name, quantity: requested[index]!.quantity })),
+        expiresAt: now() + PROPOSAL_MS, used: false };
+      session.proposal = proposal;
+      return { ...basic, products,
+        ...(terms ? { sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt } : {}),
+        reply: facts + (locale === 'kk'
+        ? ' Барлық позицияны демо себетке қосу үшін бөлек растаңыз. Себет әзірге өзгерген жоқ.'
+        : ' Подтвердите отдельным действием добавление всех позиций в демонстрационную корзину. Корзина пока не изменена.'),
+        proposal: { id: proposal.id,
+          items: proposal.items.map((item) => ({ productId: item.productId, quantity: item.quantity })),
+          expiresAt: new Date(proposal.expiresAt).toISOString() } };
     }
     if (route.task === 'multi_category' || route.task === 'project' || (route.task === 'search' && !sku)) {
       const comparison = /сравн|что\s+лучше|қайсысы\s+жақсы/iu.test(message) && session.recentProductIds.length >= 2;
@@ -782,7 +898,7 @@ export function buildApp(options: {
         : 'Для подбора электрики дома нужны число помещений, нагрузка, схема и условия монтажа. Уточните их, чтобы проверить конкретные товары.' };
     }
     let product = sku ? await catalog.findBySku(sku) : null;
-    if (!product && !sku && isAddIntent(message) && session.lastProductId) {
+    if (!product && !sku && addIntent && session.lastProductId) {
       product = await catalog.getById(session.lastProductId);
     }
     if (!product) return { ...basic, reply: sku
@@ -793,13 +909,11 @@ export function buildApp(options: {
     rememberProducts(session, [product]);
     const analogs = product.stock.status === 'out_of_stock'
       ? (await catalog.findAnalogs(product)).map((analog) => localizeAnalog(analog, locale)) : [];
-    const response = { ...basic, products: [product], analogs, reply: productReply(product, analogs, locale) };
-    if (!isAddIntent(message)) return response;
-    const quantity = requestedQuantity(message);
-    if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1000) {
-      throw new ApiFailure(400, 'INVALID_QUANTITY', locale === 'kk'
-        ? '1-ден 1000-ға дейінгі санды көрсетіңіз.' : 'Укажите количество от 1 до 1000.');
-    }
+    const response = { ...basic, products: [product], analogs,
+      ...(terms ? { sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt } : {}),
+      reply: productReply(product, analogs, locale) + (terms ? ' ' + terms.reply : '') };
+    if (!addIntent) return response;
+    const quantity = requested[0]?.quantity ?? 1;
     const already = session.items.find((item) => item.productId === product.id)?.quantity || 0;
     if (product.stock.available === null || product.stock.status !== 'in_stock') {
       return { ...response, reply: response.reply + (locale === 'kk'
@@ -811,8 +925,8 @@ export function buildApp(options: {
         ? ' Сұралған сан себеттегі тауармен бірге қолжетімді қалдықтан асады.'
         : ' Запрошенное количество превышает доступный остаток с учётом корзины.') };
     }
-    const proposal: Proposal = { id: randomUUID(), productId: product.id, sku: product.sku, name: product.name,
-      quantity, expiresAt: now() + PROPOSAL_MS, used: false };
+    const proposal: Proposal = { id: randomUUID(), items: [{ productId: product.id, sku: product.sku,
+      name: product.name, quantity }], expiresAt: now() + PROPOSAL_MS, used: false };
     session.proposal = proposal;
     return { ...response, reply: response.reply + (locale === 'kk'
       ? ' Демо себетке ' + quantity + ' дана қосу үшін бөлек растаңыз.'
