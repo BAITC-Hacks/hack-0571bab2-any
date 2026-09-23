@@ -30,3 +30,16 @@ export type ChatResponse = {
   requestId?: string;
 };
 export type ConfirmResponse = { cart: Cart; cartUrl: string; status: 'added'; requestId?: string };
+
+export type Locale = 'ru' | 'kk';
+export type AttachmentResponse = {
+  candidates: { sku: string; quantity: number; confidence: 'low' | 'medium' | 'high' }[];
+  products?: Product[];
+  warning: string;
+  reply?: string;
+  requiresManualReview: boolean;
+  cartChanged: false;
+  factsSource: FactsSource;
+  requestId?: string;
+  photoAnalysis?: { status: 'manual_review' | 'analyzed'; reason?: string; observationsUnverified?: boolean };
+};

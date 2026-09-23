@@ -1,28 +1,47 @@
-import type { Cart, ChatResponse, ConfirmResponse } from './types';
-import { mockApi } from './mockApi';
+import type { AttachmentResponse, Cart, ChatResponse, ConfirmResponse, Locale } from './types';
 import { ApiFailure } from './errors';
 export { ApiFailure } from './errors';
 
 let sessionCsrfToken: string | undefined;
 let cartRequest: Promise<Cart> | undefined;
+let apiBase = '/api';
 
-export const isDemo = (): boolean => {
-  if (new URLSearchParams(window.location.search).get('demo') === '1') {
-    sessionStorage.setItem('ekt_frontend_mock', '1');
-  }
-  return sessionStorage.getItem('ekt_frontend_mock') === '1';
-};
-
-async function ensureSession(): Promise<void> {
-  if (!sessionCsrfToken) await api.cart();
+// Keep the session on the host origin. In production, proxy this prefix to the API.
+export function configureApi(base = '/api') {
+  const url = new URL(base, location.origin);
+  if (url.origin !== location.origin || url.search || url.hash) throw new Error('API must use a same-origin path');
+  apiBase = url.pathname.replace(/\/$/, '');
+  sessionCsrfToken = undefined;
 }
 
-async function mutation<T>(path: string, body: unknown): Promise<T> {
-  await ensureSession();
-  const options: RequestInit = { method: 'POST', body: JSON.stringify(body) };
+async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
+  const controller = new AbortController();
+  const timer = window.setTimeout(() => controller.abort(), path === '/attachments' ? 45000 : 15000);
   try {
-    return await request<T>(path, options);
+    const response = await fetch(apiBase + path, {
+      ...options, credentials: 'same-origin', signal: controller.signal,
+      headers: {
+        ...(options.body && !(options.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
+        ...(sessionCsrfToken ? { 'X-CSRF-Token': sessionCsrfToken } : {}), ...options.headers,
+      },
+    });
+    const body: unknown = await response.json().catch(() => null);
+    if (!response.ok || !body) {
+      const details = (body as { error?: { code?: string; message?: string; available?: number } } | null)?.error;
+      throw new ApiFailure(details?.message || 'Запрос не выполнен', details?.code || (response.ok ? 'INVALID_RESPONSE' : String(response.status)), details?.available, response.status);
+    }
+    return body as T;
   } catch (error) {
+    if (error instanceof ApiFailure) throw error;
+    throw new ApiFailure('Нет ответа сервера', error instanceof Error && error.name === 'AbortError' ? 'TIMEOUT' : 'NETWORK');
+  } finally { window.clearTimeout(timer); }
+}
+
+async function mutation<T>(path: string, body: unknown, headers?: Record<string, string>): Promise<T> {
+  if (!sessionCsrfToken) await api.cart();
+  const options = { method: 'POST', body: body instanceof FormData ? body : JSON.stringify(body), headers };
+  try { return await request<T>(path, options); }
+  catch (error) {
     if (!(error instanceof ApiFailure) || !['SESSION_REQUIRED', 'CSRF_INVALID'].includes(error.code)) throw error;
     sessionCsrfToken = undefined;
     await api.cart();
@@ -30,60 +49,26 @@ async function mutation<T>(path: string, body: unknown): Promise<T> {
   }
 }
 
-async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
-  const controller = new AbortController();
-  const timer = window.setTimeout(() => controller.abort(), 12000);
-  const token = sessionCsrfToken;
-  try {
-    const response = await fetch(path, {
-      ...options,
-      credentials: 'include',
-      signal: controller.signal,
-      headers: {
-        'Content-Type': 'application/json',
-        ...(token ? { 'X-CSRF-Token': token } : {}),
-        ...options.headers,
-      },
-    });
-    const body: unknown = await response.json().catch(() => null);
-    if (!response.ok) {
-      const error = body && typeof body === 'object' && 'error' in body ? body.error : null;
-      const details = error && typeof error === 'object' ? error as Record<string, unknown> : {};
-      const available = details.available;
-      throw new ApiFailure(
-        typeof details.message === 'string' ? details.message : response.status >= 500 ? 'Сервис временно недоступен. Повторите запрос позже.' : `Запрос не выполнен (${response.status}).`,
-        typeof details.code === 'string' ? details.code : String(response.status),
-        typeof available === 'number' ? available : undefined,
-      );
-    }
-    return body as T;
-  } catch (error) {
-    if (error instanceof ApiFailure) throw error;
-    if (error instanceof Error && error.name === 'AbortError') throw new ApiFailure('Сервер не ответил вовремя. Попробуйте ещё раз.', 'TIMEOUT');
-    throw new ApiFailure('Нет связи с сервером. Проверьте соединение и повторите запрос.', 'NETWORK');
-  } finally {
-    window.clearTimeout(timer);
-  }
+export function publishCart(cart: Cart) {
+  window.dispatchEvent(new CustomEvent<Cart>('ekt-cart-snapshot', { detail: cart }));
 }
 
 export const api = {
-  async chat(message: string): Promise<ChatResponse> {
-    if (isDemo()) return mockApi.chat(message);
-    return mutation('/api/chat', { message, locale: 'ru' });
-  },
+  chat: (message: string, locale: Locale): Promise<ChatResponse> => mutation('/chat', { message, locale }),
   async confirm(proposalId: string, idempotencyKey: string): Promise<ConfirmResponse> {
-    if (isDemo()) return mockApi.confirm(proposalId, idempotencyKey);
-    return mutation('/api/cart/confirm', { proposalId, idempotencyKey });
+    const result = await mutation<ConfirmResponse>('/cart/confirm', { proposalId, idempotencyKey });
+    if (result.status !== 'added' || !Array.isArray(result.cart?.items) || typeof result.cartUrl !== 'string') throw new ApiFailure('Некорректный ответ', 'INVALID_RESPONSE');
+    return result;
   },
-  async cart(): Promise<Cart> {
-    if (isDemo()) return mockApi.cart();
-    if (!cartRequest) {
-      cartRequest = request<Cart>('/api/cart').then((cart) => {
-        sessionCsrfToken = cart.csrfToken;
-        window.dispatchEvent(new CustomEvent<Cart>('ekt-cart-snapshot', { detail: cart }));
-        return cart;
-      }).finally(() => { cartRequest = undefined; });
-    }
+  attachment(file: File, locale: Locale, photoConsent: boolean): Promise<AttachmentResponse> {
+    const body = new FormData(); body.append('file', file);
+    return mutation('/attachments', body, { 'X-Attachment-Locale': locale, 'X-Photo-Consent': String(photoConsent) });
+  },
+  health: () => request<{ catalog: 'live' | 'demo' | 'unavailable'; model: 'ready' | 'fallback' }>('/health'),
+  cart(): Promise<Cart> {
+    if (!cartRequest) cartRequest = request<Cart>('/cart').then(cart => {
+      sessionCsrfToken = cart.csrfToken; publishCart(cart); return cart;
+    }).finally(() => { cartRequest = undefined; });
     return cartRequest;
   },
 };

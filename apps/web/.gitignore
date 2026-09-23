@@ -1,1 +1,4 @@
 *.tsbuildinfo
+dist-widget/
+playwright-report/
+test-results/
