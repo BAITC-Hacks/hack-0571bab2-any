@@ -324,6 +324,67 @@ test('a different product question invalidates an older cart proposal before tex
   assert.equal((await cart(app, session)).json().itemCount, 0);
 });
 
+test('intervening chat cancels a confirmation while its stock recheck is pending', async (t) => {
+  const base = createDemoCatalog();
+  let delayDetail = false;
+  let signalRead!: () => void;
+  let releaseRead!: () => void;
+  const readStarted = new Promise<void>((resolve) => { signalRead = resolve; });
+  const heldRead = new Promise<void>((resolve) => { releaseRead = resolve; });
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    findBySku: (sku) => base.findBySku(sku),
+    async getById(id) {
+      if (delayDetail) {
+        signalRead();
+        await heldRead;
+      }
+      return base.getById(id);
+    },
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const proposed = await chat(app, session, 'Добавь 2 ABC-123');
+  const proposalId = proposed.json().proposal.id as string;
+
+  delayDetail = true;
+  const pendingConfirmation = confirm(app, session, proposalId, 'cancel-race-001');
+  await readStarted;
+  const cancellation = await chat(app, session, 'Отмена, больше не добавляй');
+  releaseRead();
+  const response = await pendingConfirmation;
+
+  assert.equal(cancellation.statusCode, 200);
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json().error.code, 'PROPOSAL_NOT_FOUND');
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
+test('a proposal expiring during the stock recheck cannot change the cart', async (t) => {
+  const base = createDemoCatalog();
+  let currentTime = 0;
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    findBySku: (sku) => base.findBySku(sku),
+    async getById(id) {
+      currentTime = 10 * 60 * 1000;
+      return base.getById(id);
+    },
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin, now: () => currentTime });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const proposed = await chat(app, session, 'Добавь 2 ABC-123');
+
+  const response = await confirm(app, session, proposed.json().proposal.id, 'expire-race-001');
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json().error.code, 'PROPOSAL_EXPIRED');
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
 test('confirm rejects a product whose SKU or name changed after the proposal', async () => {
   for (const changedField of ['sku', 'name'] as const) {
     const base = createDemoCatalog();

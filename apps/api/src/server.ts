@@ -319,6 +319,12 @@ export function buildApp(options: {
       if (proposal.used) throw new ApiFailure(409, 'PROPOSAL_ALREADY_USED', 'Предложение уже подтверждено.');
       if (proposal.expiresAt <= now()) throw new ApiFailure(409, 'PROPOSAL_EXPIRED', 'Срок предложения истёк.');
       const fresh = await catalog.getById(proposal.productId);
+      if (session.proposal !== proposal) {
+        throw new ApiFailure(409, 'PROPOSAL_NOT_FOUND', 'Предложение больше не ожидает подтверждения.');
+      }
+      if (proposal.expiresAt <= now()) {
+        throw new ApiFailure(409, 'PROPOSAL_EXPIRED', 'Срок предложения истёк.');
+      }
       if (!fresh || fresh.stock.available === null || fresh.stock.status !== 'in_stock') {
         throw new ApiFailure(409, 'STOCK_UNAVAILABLE', 'Наличие товара сейчас не подтверждено.');
       }
