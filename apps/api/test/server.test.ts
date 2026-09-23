@@ -81,6 +81,78 @@ test('T2: unavailable product has an available, explained compatible analog', as
   assert.equal(body.analogs[0].product.stock.status, 'in_stock');
   assert.ok(body.analogs[0].matchedCharacteristics.length >= 2);
   assert.match(body.analogs[0].reason, /совпадают/);
+  assert.doesNotMatch(body.reply, /\.\./);
+});
+
+test('Kazakh chat explains product facts, missing certificate, and analog evidence', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const facts = (await chat(app, session, 'ABC-123 бар ма?', 'kk')).json();
+  assert.equal(facts.factsSource, 'catalog_demo');
+  assert.match(facts.reply, /Демо каталог деректері/);
+  assert.match(facts.reply, /Қоймада: 4 дана/);
+  assert.match(facts.reply, /Номиналды ток: 10 А/);
+  assert.match(facts.reply, /Сертификатқа расталған сілтеме жоқ/);
+  assert.doesNotMatch(facts.reply, /В наличии|Характеристики|Подтверждённая ссылка/);
+  assert.equal(facts.products[0].certificateUrl, null);
+
+  const unavailable = (await chat(app, session, 'ABC-000 бар ма?', 'kk')).json();
+  assert.match(unavailable.reply, /Қоймада жоқ/);
+  assert.match(unavailable.reply, /ықтимал балама: ABC-124/);
+  assert.match(unavailable.analogs[0].reason, /Номиналды кернеу: 230 В/);
+  assert.match(unavailable.analogs[0].reason, /қалған параметрлерін.*тексеріңіз/);
+  assert.equal(unavailable.analogs[0].product.stock.status, 'in_stock');
+  assert.doesNotMatch(unavailable.reply, /\.\./);
+});
+
+test('Kazakh chat gives prompts and requires separate consent before changing the cart', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const guidance = (await chat(app, session, 'Сәлем', 'kk')).json();
+  assert.match(guidance.reply, /тауар артикулын көрсетіңіз/);
+  const missing = (await chat(app, session, 'XYZ-999 бар ма?', 'kk')).json();
+  assert.match(missing.reply, /қолжетімді каталогтан табылмады/);
+
+  const proposed = (await chat(app, session, 'ABC-123 себетке 2 дана қос', 'kk')).json();
+  assert.equal(proposed.cartChanged, false);
+  assert.equal(proposed.proposal.items[0].quantity, 2);
+  assert.match(proposed.reply, /бөлек растаңыз/);
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+
+  const confirmed = (await chat(app, session, 'Иә, қос', 'kk')).json();
+  assert.equal(confirmed.cartChanged, true);
+  assert.equal(confirmed.cart.itemCount, 2);
+  assert.equal(confirmed.cartUrl, '/cart');
+  assert.match(confirmed.reply, /Демо себетке қосылды/);
+  const replay = (await chat(app, session, 'Иә, қос', 'kk')).json();
+  assert.equal(replay.cartChanged, false);
+  assert.match(replay.reply, /Растауды күтіп тұрған ұсыныс жоқ/);
+  assert.equal((await cart(app, session)).json().itemCount, 2);
+});
+
+test('Kazakh reply preserves a nonstandard analog warning instead of replacing its meaning', async (t) => {
+  const base = createDemoCatalog();
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    findBySku: (sku) => base.findBySku(sku),
+    getById: (id) => base.getById(id),
+    async findAnalogs(product) {
+      const analogs = await base.findAnalogs(product);
+      return analogs.map((analog) => ({ ...analog, reason: 'Требуется отдельная проверка производителя.' }));
+    },
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const response = await chat(app, session, 'ABC-000 бар ма?', 'kk');
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.json().analogs[0].reason, 'Требуется отдельная проверка производителя.');
+  assert.match(response.json().reply, /Требуется отдельная проверка производителя/);
 });
 
 test('T3: purchase terms cite the public source and state both unknowns', async (t) => {

@@ -7,6 +7,7 @@ import {
   createDemoCatalog,
   createLiveCatalog,
   CatalogError,
+  type Analog,
   type CatalogProvider,
   type Product,
 } from './catalog.js';
@@ -85,7 +86,7 @@ function extractSku(message: string): string | null {
 }
 
 function isAddIntent(message: string): boolean {
-  return /(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|в\s+корзин|add\s+to\s+cart|себетке\s+қос)/iu.test(message);
+  return /(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|в\s+корзин|add\s+to\s+cart|себетке(?:\s+\d+(?:\s*дана)?)?\s+қос)/iu.test(message);
 }
 
 function isExplicitConfirmation(message: string): boolean {
@@ -93,32 +94,68 @@ function isExplicitConfirmation(message: string): boolean {
 }
 
 function requestedQuantity(message: string): number {
-  const match = message.match(/(?:добав(?:ь|ить|ьте)|полож(?:и|ить))\s+(\d+)(?:\s|$)|(?:^|\s)(\d+)\s*(?:шт\.?|штук|дана|pcs)(?:\s|$)/iu);
+  const match = message.match(/(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|қос)\s+(\d+)(?:\s|$)|(?:^|\s)(\d+)\s*(?:шт\.?|штук|дана|pcs)(?:\s|$)|себетке\s+(\d+)\s*(?:дана\s+)?қос/iu);
   if (!match) return 1;
-  return Number(match[1] || match[2]);
+  return Number(match[1] || match[2] || match[3]);
 }
 
-function productReply(product: Product, analogs: { product: Product; reason: string }[], locale: 'ru' | 'kk'): string {
-  const demo = product.source === 'catalog_demo' ? (locale === 'kk' ? 'Демо-каталог. ' : 'Демо-каталог. ') : '';
+const KK_CHARACTERISTIC_LABELS: Record<string, string> = {
+  NOMINALNOE_NAPRYAZHENIE: 'Номиналды кернеу',
+  NOMINALNYY_TOK: 'Номиналды ток',
+  KOLICHESTVO_POLYUSOV: 'Полюстер саны',
+  TIP_USTANOVKI: 'Орнату түрі',
+};
+
+const KK_MATCHED_LABELS: Record<string, string> = {
+  'Номинальное напряжение': 'Номиналды кернеу',
+  'Номинальный ток': 'Номиналды ток',
+  'Количество полюсов': 'Полюстер саны',
+  'Тип установки': 'Орнату түрі',
+};
+
+function localizeAnalog(analog: Analog, locale: 'ru' | 'kk'): Analog {
+  if (locale === 'ru') return analog;
+  const generatedReason = `Та же категория; совпадают ${analog.matchedCharacteristics.join(', ')}. Товар в наличии; остальные параметры проверьте перед покупкой.`;
+  if (analog.reason !== generatedReason) return analog;
+  const matchedCharacteristics = analog.matchedCharacteristics.map((text) => {
+    const separator = text.indexOf(':');
+    if (separator < 0) return text;
+    const label = text.slice(0, separator);
+    return (KK_MATCHED_LABELS[label] || label) + text.slice(separator);
+  });
+  const matched = matchedCharacteristics.length
+    ? 'тексерілген маңызды сипаттамалары сәйкес: ' + matchedCharacteristics.join(', ') + '. '
+    : '';
+  return {
+    ...analog,
+    matchedCharacteristics,
+    reason: 'Санаты бірдей; ' + matched + 'Тауар қоймада бар; қалған параметрлерін сатып алудан бұрын тексеріңіз.',
+  };
+}
+
+function productReply(product: Product, analogs: Analog[], locale: 'ru' | 'kk'): string {
+  const kk = locale === 'kk';
+  const demo = product.source === 'catalog_demo' ? (kk ? 'Демо каталог деректері. ' : 'Демо-каталог. ') : '';
   const availability = product.stock.available === null
-    ? 'Остаток не подтверждён.'
+    ? (kk ? 'Қоймадағы қалдық расталмаған.' : 'Остаток не подтверждён.')
     : product.stock.available === 0
-      ? 'Нет в наличии.'
-      : 'В наличии: ' + product.stock.available + ' шт.';
+      ? (kk ? 'Қоймада жоқ.' : 'Нет в наличии.')
+      : (kk ? 'Қоймада: ' + product.stock.available + ' дана.' : 'В наличии: ' + product.stock.available + ' шт.');
   const properties = Object.entries(product.characteristics).slice(0, 5)
-    .map(([key, value]) => key + ': ' + value).join('; ');
+    .map(([key, value]) => (kk ? KK_CHARACTERISTIC_LABELS[key] || key : key) + ': ' + value).join('; ');
   const certificate = product.certificateUrl
     ? 'Сертификат: ' + product.certificateUrl
-    : 'Подтверждённая ссылка на сертификат отсутствует.';
+    : (kk ? 'Сертификатқа расталған сілтеме жоқ.' : 'Подтверждённая ссылка на сертификат отсутствует.');
   const alternative = analogs.length
-    ? ' Возможный аналог по проверенным характеристикам: ' + analogs.map((entry) => entry.product.sku + ' — ' + entry.reason).join('; ') + '.'
+    ? (kk ? ' Тексерілген сипаттамалары бойынша ықтимал балама: ' : ' Возможный аналог по проверенным характеристикам: ') +
+      analogs.map((entry) => entry.product.sku + ' — ' + entry.reason.replace(/[.!?]+$/u, '')).join('; ') + '.'
     : product.stock.status === 'out_of_stock'
       ? product.source === 'catalog_live'
-        ? ' В проверенной части каталога аналог не найден; уточните у менеджера.'
-        : ' В демонстрационном каталоге аналог не найден.'
+        ? (kk ? ' Каталогтың тексерілген бөлігінде балама табылмады; менеджерден нақтылаңыз.' : ' В проверенной части каталога аналог не найден; уточните у менеджера.')
+        : (kk ? ' Демо каталогта балама табылмады.' : ' В демонстрационном каталоге аналог не найден.')
       : '';
   return demo + product.name + ' (' + product.sku + '). ' + availability +
-    (properties ? ' Характеристики: ' + properties + '.' : '') + ' ' + certificate + alternative;
+    (properties ? (kk ? ' Сипаттамалары: ' : ' Характеристики: ') + properties + '.' : '') + ' ' + certificate + alternative;
 }
 
 function escapeHtml(value: string): string {
@@ -347,9 +384,10 @@ export function buildApp(options: {
 
     if (isExplicitConfirmation(message)) {
       const proposal = session.proposal;
-      if (!proposal || proposal.used) return { ...basic, reply: 'Нет предложения, ожидающего подтверждения.' };
+      if (!proposal || proposal.used) return { ...basic, reply: locale === 'kk'
+        ? 'Растауды күтіп тұрған ұсыныс жоқ.' : 'Нет предложения, ожидающего подтверждения.' };
       const result = await confirm(session, proposal.id, 'chat_' + proposal.id, String(request.id));
-      return { ...basic, reply: 'Добавлено в демонстрационную корзину.', cartChanged: true,
+      return { ...basic, reply: locale === 'kk' ? 'Демо себетке қосылды.' : 'Добавлено в демонстрационную корзину.', cartChanged: true,
         cart: result.cart, cartUrl: CART_URL };
     }
 
@@ -367,28 +405,36 @@ export function buildApp(options: {
       product = await catalog.getById(session.lastProductId);
     }
     if (!product) return { ...basic, reply: sku
-      ? 'Артикул ' + sku + ' не найден в доступном каталоге.'
-      : 'Укажите артикул товара, чтобы проверить характеристики и остаток.' };
+      ? (locale === 'kk' ? 'Артикул ' + sku + ' қолжетімді каталогтан табылмады.' : 'Артикул ' + sku + ' не найден в доступном каталоге.')
+      : (locale === 'kk' ? 'Сипаттамалары мен қоймадағы санын тексеру үшін тауар артикулын көрсетіңіз.' : 'Укажите артикул товара, чтобы проверить характеристики и остаток.') };
 
     session.lastProductId = product.id;
-    const analogs = product.stock.status === 'out_of_stock' ? await catalog.findAnalogs(product) : [];
+    const analogs = product.stock.status === 'out_of_stock'
+      ? (await catalog.findAnalogs(product)).map((analog) => localizeAnalog(analog, locale)) : [];
     const response = { ...basic, products: [product], analogs, reply: productReply(product, analogs, locale) };
     if (!isAddIntent(message)) return response;
     const quantity = requestedQuantity(message);
     if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1000) {
-      throw new ApiFailure(400, 'INVALID_QUANTITY', 'Укажите количество от 1 до 1000.');
+      throw new ApiFailure(400, 'INVALID_QUANTITY', locale === 'kk'
+        ? '1-ден 1000-ға дейінгі санды көрсетіңіз.' : 'Укажите количество от 1 до 1000.');
     }
     const already = session.items.find((item) => item.productId === product.id)?.quantity || 0;
     if (product.stock.available === null || product.stock.status !== 'in_stock') {
-      return { ...response, reply: response.reply + ' Добавление невозможно без подтверждённого остатка.' };
+      return { ...response, reply: response.reply + (locale === 'kk'
+        ? ' Қоймадағы қалдық расталмайынша себетке қосу мүмкін емес.'
+        : ' Добавление невозможно без подтверждённого остатка.') };
     }
     if (already + quantity > product.stock.available) {
-      return { ...response, reply: response.reply + ' Запрошенное количество превышает доступный остаток с учётом корзины.' };
+      return { ...response, reply: response.reply + (locale === 'kk'
+        ? ' Сұралған сан себеттегі тауармен бірге қолжетімді қалдықтан асады.'
+        : ' Запрошенное количество превышает доступный остаток с учётом корзины.') };
     }
     const proposal: Proposal = { id: randomUUID(), productId: product.id, sku: product.sku, name: product.name,
       quantity, expiresAt: now() + PROPOSAL_MS, used: false };
     session.proposal = proposal;
-    return { ...response, reply: response.reply + ' Подтвердите отдельным действием добавление ' + quantity + ' шт. в демонстрационную корзину.',
+    return { ...response, reply: response.reply + (locale === 'kk'
+      ? ' Демо себетке ' + quantity + ' дана қосу үшін бөлек растаңыз.'
+      : ' Подтвердите отдельным действием добавление ' + quantity + ' шт. в демонстрационную корзину.'),
       proposal: { id: proposal.id, items: [{ productId: product.id, quantity }], expiresAt: new Date(proposal.expiresAt).toISOString() } };
   });
 
