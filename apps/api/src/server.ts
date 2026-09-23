@@ -149,16 +149,16 @@ function rememberProducts(session: Session, products: readonly Product[]): void 
 }
 
 function extractSku(message: string): string | null {
-  const labelled = message.match(/артикул(?:ом|а|у)?\s*[:№#]?\s*([A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9./_-]{2,})/iu);
+  const labelled = message.match(/артикул(?:ом|а|у)?\s*[:№#]?\s*([A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9./_-]{2,})/iu);
   if (labelled) return labelled[1].toUpperCase();
-  const candidates = message.match(/[A-ZА-ЯЁ0-9]+(?:[-/][A-ZА-ЯЁ0-9]+)+/giu) || [];
+  const candidates = message.match(/[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+(?:[-/][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+)+/giu) || [];
   const compound = candidates.find((candidate) => /\d/.test(candidate));
   if (compound) return compound.toUpperCase();
-  return message.match(/[A-Z]{2,}\d{2,}/iu)?.[0].toUpperCase() || null;
+  return message.match(/[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ]{2,}\d{2,}/iu)?.[0].toUpperCase() || null;
 }
 
 function extractAllSkus(message: string): string[] {
-  const matches = message.match(/[A-ZА-ЯЁ0-9]+(?:[-/][A-ZА-ЯЁ0-9]+)+|[A-Z]{2,}\d{2,}/giu) ?? [];
+  const matches = message.match(/[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+(?:[-/][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+)+|[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ]{2,}\d{2,}/giu) ?? [];
   return [...new Set(matches.filter((value) => /\d/u.test(value)).map((value) => value.toUpperCase()))].slice(0, 4);
 }
 
@@ -365,7 +365,8 @@ export function buildApp(options: {
       if (sid) sessions.delete(sid);
       session = undefined;
     }
-    const needsSession = request.method === 'GET' && (request.url === '/api/cart' || request.url === '/cart');
+    const needsSession = request.method === 'GET' &&
+      (request.url === '/api/cart' || request.url === '/cart' || request.url.startsWith('/cart?'));
     if (!session && needsSession) {
       // Fastify's default request.ip is the transport peer, not a spoofable X-Forwarded-For value.
       const clientIp = request.ip;

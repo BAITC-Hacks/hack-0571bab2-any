@@ -174,7 +174,7 @@ function xmlText(xml: string, tag: 'w:t' | 't'): string {
 
 function normalizeSku(raw: string, labelled = false): string | null {
   const sku = raw.trim().toUpperCase();
-  if (sku.length < 3 || sku.length > 64 || !/^[A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9._/-]*$/u.test(sku)) return null;
+  if (sku.length < 3 || sku.length > 64 || !/^[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9._/-]*$/u.test(sku)) return null;
   if (!/\d/u.test(sku) || (!labelled && /^\d+$/u.test(sku))) return null;
   return sku;
 }
@@ -187,8 +187,11 @@ function quantity(raw: string): number | null {
 
 function lineCandidate(line: string): DocumentCandidate | null {
   const trimmed = line.trim();
-  const labelled = trimmed.match(/^(?:артикул|sku|article)\s*[:№#]?\s*([A-ZА-ЯЁ0-9._/-]+)\s+(?:(?:количество|кол-во|qty|quantity)\s*[:=]?\s*)?(\d{1,4}(?:\s*(?:шт\.?|штук|дана|pcs))?)$/iu);
-  const plain = labelled ? null : trimmed.match(/^([A-ZА-ЯЁ0-9._/-]+)\s+(\d{1,4}(?:\s*(?:шт\.?|штук|дана|pcs))?)$/iu);
+  // A valid SKU, label and quantity fit well below this bound. Avoid running
+  // nested optional whitespace patterns over a long untrusted paragraph.
+  if (trimmed.length > 256) return null;
+  const labelled = trimmed.match(/^(?:артикул|sku|article|тауар(?:дың)?\s+(?:коды|артикулы)|өнім(?:нің)?\s+(?:коды|артикулы))\s*[:№#]?\s*([A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9._/-]+)\s+(?:(?:количество|кол-во|qty|quantity|саны|дана\s+саны|тауар\s+саны|өнім\s+саны)\s*[:=]?\s*)?(\d{1,4}(?:\s*(?:шт\.?|штук|дана|pcs))?)$/iu);
+  const plain = labelled ? null : trimmed.match(/^([A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9._/-]+)\s+(\d{1,4}(?:\s*(?:шт\.?|штук|дана|pcs))?)$/iu);
   const match = labelled || plain;
   if (!match) return null;
   const sku = normalizeSku(match[1]!, Boolean(labelled));
@@ -200,13 +203,22 @@ function candidateRows(rows: string[][]): DocumentCandidate[] {
   const found: DocumentCandidate[] = [];
   let skuColumn = -1;
   let quantityColumn = -1;
+  let allowPositionalRows = true;
   for (const row of rows) {
-    const cells = row.map((cell) => cell.trim());
-    const skuHeader = cells.findIndex((cell) => /^(?:артикул|sku|article)$/iu.test(cell));
-    const qtyHeader = cells.findIndex((cell) => /^(?:количество|кол-во|qty|quantity)$/iu.test(cell));
+    const cells = row.map((cell) => cell.length > 512 ? '' : cell.trim());
+    const skuHeader = cells.findIndex((cell) => /^(?:артикул|sku|article|тауар(?:дың)?\s+(?:коды|артикулы)|өнім(?:нің)?\s+(?:коды|артикулы))$/iu.test(cell));
+    const qtyHeader = cells.findIndex((cell) => /^(?:количество|кол-во|qty|quantity|саны|дана\s+саны|тауар\s+саны|өнім\s+саны)$/iu.test(cell));
+    const priceHeader = cells.some((cell) => /^(?:цена|стоимость|price|баға(?:сы)?|құны)$/iu.test(cell));
     if (skuHeader >= 0 && qtyHeader >= 0 && skuHeader !== qtyHeader) {
       skuColumn = skuHeader;
       quantityColumn = qtyHeader;
+      continue;
+    }
+    if (skuHeader >= 0 || qtyHeader >= 0 || priceHeader) {
+      // A partial header must not turn an adjacent price into a guessed quantity.
+      skuColumn = -1;
+      quantityColumn = -1;
+      allowPositionalRows = false;
       continue;
     }
     let candidate: DocumentCandidate | null = null;
@@ -214,11 +226,14 @@ function candidateRows(rows: string[][]): DocumentCandidate[] {
       const sku = normalizeSku(cells[skuColumn] || '', true);
       const count = quantity(cells[quantityColumn] || '');
       if (sku && count) candidate = { sku, quantity: count, confidence: 'high' };
-    } else if (cells.filter(Boolean).length === 2) {
+    } else if (allowPositionalRows && cells.filter(Boolean).length === 2) {
       const nonempty = cells.filter(Boolean);
       const sku = normalizeSku(nonempty[0]!);
       const count = quantity(nonempty[1]!);
-      if (sku && count) candidate = { sku, quantity: count, confidence: 'low' };
+      // Without a quantity header, a bare integer could be a price.
+      if (sku && count && /(?:шт\.?|штук|дана|pcs)\s*$/iu.test(nonempty[1]!)) {
+        candidate = { sku, quantity: count, confidence: 'low' };
+      }
     } else if (cells.length === 1) {
       candidate = lineCandidate(cells[0]!);
     }

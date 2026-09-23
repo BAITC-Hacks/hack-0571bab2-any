@@ -111,6 +111,29 @@ test('extracts header-mapped DOCX table and labelled paragraph without guessing 
   ]);
 });
 
+test('extracts Kazakh DOCX headers and labelled line, rejecting missing or invalid quantities', async () => {
+  const document = '<w:document><w:body><w:tbl>' +
+    '<w:tr><w:tc><w:p><w:t>Тауар коды</w:t></w:p></w:tc><w:tc><w:p><w:t>Саны</w:t></w:p></w:tc>' +
+    '<w:tc><w:p><w:t>Бағасы</w:t></w:p></w:tc></w:tr>' +
+    '<w:tr><w:tc><w:p><w:t>ҚС-042</w:t></w:p></w:tc><w:tc><w:p><w:t>2 дана</w:t></w:p></w:tc>' +
+    '<w:tc><w:p><w:t>199</w:t></w:p></w:tc></w:tr>' +
+    '<w:tr><w:tc><w:p><w:t>KZ-999</w:t></w:p></w:tc><w:tc><w:p><w:t></w:t></w:p></w:tc>' +
+    '<w:tc><w:p><w:t>300</w:t></w:p></w:tc></w:tr>' +
+    '<w:tr><w:tc><w:p><w:t>KZ-998</w:t></w:p></w:tc><w:tc><w:p><w:t>2.5</w:t></w:p></w:tc>' +
+    '<w:tc><w:p><w:t>400</w:t></w:p></w:tc></w:tr></w:tbl>' +
+    '<w:p><w:t>Өнім коды: AZ-111 саны: 4 дана</w:t></w:p>' +
+    '<w:p><w:t>Өнім коды: AZ-112 саны: жоқ</w:t></w:p></w:body></w:document>';
+  const result = await extractDocumentCandidates('docx', zip({
+    '[Content_Types].xml': types,
+    'word/document.xml': document,
+  }), 'kk');
+  assert.deepEqual(result.candidates, [
+    { sku: 'ҚС-042', quantity: 2, confidence: 'high' },
+    { sku: 'AZ-111', quantity: 4, confidence: 'medium' },
+  ]);
+  assert.match(result.warning, /себет өзгерген жоқ/u);
+});
+
 test('extracts XLSX shared-string table and ignores formulas', async () => {
   const result = await extractDocumentCandidates('xlsx', zip({
     '[Content_Types].xml': types,
@@ -136,6 +159,57 @@ test('XLSX uses cell coordinates so sparse columns cannot shift the quantity', a
       '</sheetData></worksheet>',
   }));
   assert.deepEqual(result.candidates, [{ sku: 'ABC-123', quantity: 2, confidence: 'high' }]);
+});
+
+test('Kazakh XLSX quantity header maps sparse cells and does not read price as quantity', async () => {
+  const result = await extractDocumentCandidates('xlsx', zip({
+    '[Content_Types].xml': types,
+    'xl/workbook.xml': '<workbook><sheets><sheet name="List" sheetId="1"/></sheets></workbook>',
+    'xl/worksheets/sheet1.xml': '<worksheet><sheetData>' +
+      '<row r="1"><c r="A1" t="inlineStr"><is><t>Өнім коды</t></is></c>' +
+      '<c r="C1" t="inlineStr"><is><t>Дана саны</t></is></c><c r="D1" t="inlineStr"><is><t>Бағасы</t></is></c></row>' +
+      '<row r="2"><c r="A2" t="inlineStr"><is><t>KZ-201</t></is></c><c r="C2"><v>3</v></c><c r="D2"><v>900</v></c></row>' +
+      '<row r="3"><c r="A3" t="inlineStr"><is><t>KZ-202</t></is></c><c r="D3"><v>800</v></c></row>' +
+      '<row r="4"><c r="A4" t="inlineStr"><is><t>KZ-203</t></is></c><c r="C4"><v>0</v></c><c r="D4"><v>700</v></c></row>' +
+      '</sheetData></worksheet>',
+  }), 'kk');
+  assert.deepEqual(result.candidates, [{ sku: 'KZ-201', quantity: 3, confidence: 'high' }]);
+});
+
+test('a new price section resets a previous quantity column', async () => {
+  const result = await extractDocumentCandidates('xlsx', zip({
+    '[Content_Types].xml': types,
+    'xl/workbook.xml': '<workbook><sheets><sheet name="List" sheetId="1"/></sheets></workbook>',
+    'xl/worksheets/sheet1.xml': '<worksheet><sheetData>' +
+      '<row r="1"><c r="A1" t="inlineStr"><is><t>Тауар коды</t></is></c>' +
+      '<c r="B1" t="inlineStr"><is><t>Саны</t></is></c></row>' +
+      '<row r="2"><c r="A2" t="inlineStr"><is><t>KZ-300</t></is></c><c r="B2"><v>2</v></c></row>' +
+      '<row r="3"><c r="A3" t="inlineStr"><is><t>Тауар</t></is></c>' +
+      '<c r="B3" t="inlineStr"><is><t>Бағасы</t></is></c></row>' +
+      '<row r="4"><c r="A4" t="inlineStr"><is><t>KZ-301</t></is></c><c r="B4"><v>199</v></c></row>' +
+      '</sheetData></worksheet>',
+  }));
+  assert.deepEqual(result.candidates, [{ sku: 'KZ-300', quantity: 2, confidence: 'high' }]);
+});
+
+test('headerless table rows require a quantity unit rather than guessing from a bare price', async () => {
+  const document = '<w:document><w:body><w:tbl>' +
+    '<w:tr><w:tc><w:p><w:t>KZ-301</w:t></w:p></w:tc><w:tc><w:p><w:t>199</w:t></w:p></w:tc></w:tr>' +
+    '<w:tr><w:tc><w:p><w:t>KZ-302</w:t></w:p></w:tc><w:tc><w:p><w:t>2 дана</w:t></w:p></w:tc></w:tr>' +
+    '</w:tbl></w:body></w:document>';
+  const result = await extractDocumentCandidates('docx', zip({ '[Content_Types].xml': types,
+    'word/document.xml': document }), 'kk');
+  assert.deepEqual(result.candidates, [{ sku: 'KZ-302', quantity: 2, confidence: 'low' }]);
+});
+
+test('long malformed Kazakh quantity lines do not stall document extraction', async () => {
+  const paragraph = '<w:p><w:t>Тауар коды AZ-111 саны ' + ' '.repeat(8000) + 'x</w:t></w:p>';
+  const document = '<w:document><w:body>' + paragraph.repeat(12) + '</w:body></w:document>';
+  const started = performance.now();
+  const result = await extractDocumentCandidates('docx', zip({ '[Content_Types].xml': types,
+    'word/document.xml': document }), 'kk');
+  assert.deepEqual(result.candidates, []);
+  assert.ok(performance.now() - started < 750, 'bounded input must not cause regex backtracking delay');
 });
 
 test('rejects malformed ZIP and limits compressed expansion before parsing', async () => {

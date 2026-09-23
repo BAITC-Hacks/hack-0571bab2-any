@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { buildApp } from '../src/server.js';
-import { CatalogError, createDemoCatalog, type CatalogProvider } from '../src/catalog.js';
+import { CatalogError, createDemoCatalog, type CatalogProvider, type Product } from '../src/catalog.js';
 
 const host = 'api.test';
 const origin = `http://${host}`;
@@ -111,6 +111,57 @@ test('Kazakh chat explains product facts, missing certificate, and analog eviden
   assert.match(unavailable.analogs[0].reason, /қалған параметрлерін.*тексеріңіз/);
   assert.equal(unavailable.analogs[0].product.stock.status, 'in_stock');
   assert.doesNotMatch(unavailable.reply, /\.\./);
+});
+
+test('a catalog-provided certificate URL is shown in both languages without inventing one', async (t) => {
+  const base = createDemoCatalog();
+  const certificateUrl = 'https://example.test/synthetic-certificate.pdf';
+  const withCertificate = (product: Product | null): Product | null =>
+    product?.sku === 'ABC-123' ? { ...product, certificateUrl } : product;
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    async findBySku(sku) { return withCertificate(await base.findBySku(sku)); },
+    async getById(id) { return withCertificate(await base.getById(id)); },
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  for (const locale of ['ru', 'kk'] as const) {
+    const response = await chat(app, session, 'ABC-123 бар ма?', locale);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().products[0].certificateUrl, certificateUrl);
+    assert.match(response.json().reply, /https:\/\/example\.test\/synthetic-certificate\.pdf/u);
+    assert.doesNotMatch(response.json().reply, /ссылка на сертификат отсутствует|Сертификатқа расталған сілтеме жоқ/u);
+  }
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
+test('a Kazakh-letter SKU is looked up intact in Kazakh chat', async (t) => {
+  const base = createDemoCatalog();
+  const original = await base.findBySku('ABC-123');
+  assert.ok(original);
+  const products: Product[] = ['ҚС-042', 'ҚС042'].map((sku, index) => ({
+    ...original, id: `${original.id}-kk-${index}`, sku,
+  }));
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    async findBySku(sku) { return products.find((product) => product.sku === sku) ?? null; },
+    async getById(id) { return products.find((product) => product.id === id) ?? null; },
+    async findAnalogs() { return []; },
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  for (const product of products) {
+    const response = await chat(app, session, `${product.sku} бар ма?`, 'kk');
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().products[0].sku, product.sku);
+    assert.ok(response.json().reply.includes(product.sku));
+  }
+  assert.equal((await cart(app, session)).json().itemCount, 0);
 });
 
 test('Kazakh chat gives prompts and requires separate consent before changing the cart', async (t) => {
@@ -241,6 +292,11 @@ test('T4/T5/T7: proposal leaves cart untouched; explicit confirm adds once and /
   assert.match(kazakhPage.body, /<html lang="kk">/);
   assert.match(kazakhPage.body, /Бұл прототиптің себеті, ekt\.kz себеті емес/);
   assert.match(kazakhPage.body, /Барлығы: 2 дана/);
+
+  const freshKazakhPage = await app.inject({ method: 'GET', url: '/cart?lang=kk', headers: { host } });
+  assert.equal(freshKazakhPage.statusCode, 200);
+  assert.match(freshKazakhPage.body, /Себет бос/);
+  assert.ok(freshKazakhPage.headers['set-cookie']);
 });
 
 test('T6: confirm rereads mutable stock and rejects an outdated proposal', async (t) => {

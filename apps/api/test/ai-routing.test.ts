@@ -6,6 +6,8 @@ test('known item, terms and cart use code rather than model tokens', () => {
   const context = { externalProcessingAllowed: true, modelCallsUsed: 0 };
   for (const [message, task] of [
     ['Есть ли артикул ABC-123?', 'known_item'],
+    ['ҚС-042 бар ма?', 'known_item'],
+    ['ҚС042 бар ма?', 'known_item'],
     ['Какая доставка и оплата?', 'purchase_terms'],
     ['Добавь 2 ABC-123', 'cart'],
   ] as const) {
