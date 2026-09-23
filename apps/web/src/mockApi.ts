@@ -40,7 +40,7 @@ export const mockApi = {
       factsSource: 'catalog_demo' as const, cartChanged: false, requestId: crypto.randomUUID() };
 
     if (/оплат|достав|партии|партия|заказа|услови/i.test(text)) {
-      return { ...base, factsSource: 'partner_policy', reply: 'На публичной странице ekt.kz указаны способы оплаты для физических и юридических лиц и общие условия доставки. Точную стоимость и срок доставки нужно согласовать для вашего города и заказа. Подтверждённая минимальная партия в доступных источниках не указана — уточните у менеджера. Источник: https://ekt.kz/checkout-delivery/ (проверено 23.09.2026).' };
+      return { ...base, factsSource: 'partner_policy', sourceUrl: 'https://ekt.kz/checkout-delivery/', checkedAt: '2026-09-23', reply: 'На публичной странице ekt.kz указаны способы оплаты для физических и юридических лиц и общие условия доставки. Точную стоимость и срок доставки нужно согласовать для вашего города и заказа. Подтверждённая минимальная партия в доступных источниках не указана — уточните у менеджера.' };
     }
     if (/добав|корзин|возьму|купить/i.test(text)) {
       if (!product || product.stock.available === null || product.stock.available < 1) {

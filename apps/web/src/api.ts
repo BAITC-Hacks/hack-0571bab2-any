@@ -3,6 +3,8 @@ import { mockApi } from './mockApi';
 import { ApiFailure } from './errors';
 export { ApiFailure } from './errors';
 
+let sessionCsrfToken: string | undefined;
+
 export const isDemo = (): boolean => {
   if (new URLSearchParams(window.location.search).get('demo') === '1') {
     sessionStorage.setItem('ekt_frontend_mock', '1');
@@ -10,16 +12,14 @@ export const isDemo = (): boolean => {
   return sessionStorage.getItem('ekt_frontend_mock') === '1';
 };
 
-function csrfToken(): string | undefined {
-  const meta = document.querySelector<HTMLMetaElement>('meta[name="csrf-token"]')?.content;
-  const cookie = document.cookie.match(/(?:^|; )csrf_token=([^;]*)/)?.[1];
-  return meta || (cookie ? decodeURIComponent(cookie) : undefined);
+async function ensureSession(): Promise<void> {
+  if (!sessionCsrfToken) await api.cart();
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
   const controller = new AbortController();
   const timer = window.setTimeout(() => controller.abort(), 12000);
-  const token = csrfToken();
+  const token = sessionCsrfToken;
   try {
     const response = await fetch(path, {
       ...options,
@@ -35,7 +35,7 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
     if (!response.ok) {
       const error = body && typeof body === 'object' && 'error' in body ? body.error : null;
       const details = error && typeof error === 'object' ? error as Record<string, unknown> : {};
-      const available = body && typeof body === 'object' && 'available' in body ? body.available : undefined;
+      const available = details.available;
       throw new ApiFailure(
         typeof details.message === 'string' ? details.message : response.status >= 500 ? 'Сервис временно недоступен. Повторите запрос позже.' : `Запрос не выполнен (${response.status}).`,
         typeof details.code === 'string' ? details.code : String(response.status),
@@ -53,13 +53,20 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 }
 
 export const api = {
-  chat(message: string): Promise<ChatResponse> {
-    return isDemo() ? mockApi.chat(message) : request('/api/chat', { method: 'POST', body: JSON.stringify({ message, locale: 'ru' }) });
+  async chat(message: string): Promise<ChatResponse> {
+    if (isDemo()) return mockApi.chat(message);
+    await ensureSession();
+    return request('/api/chat', { method: 'POST', body: JSON.stringify({ message, locale: 'ru' }) });
   },
-  confirm(proposalId: string, idempotencyKey: string): Promise<ConfirmResponse> {
-    return isDemo() ? mockApi.confirm(proposalId, idempotencyKey) : request('/api/cart/confirm', { method: 'POST', body: JSON.stringify({ proposalId, idempotencyKey }) });
+  async confirm(proposalId: string, idempotencyKey: string): Promise<ConfirmResponse> {
+    if (isDemo()) return mockApi.confirm(proposalId, idempotencyKey);
+    await ensureSession();
+    return request('/api/cart/confirm', { method: 'POST', body: JSON.stringify({ proposalId, idempotencyKey }) });
   },
-  cart(): Promise<Cart> {
-    return isDemo() ? mockApi.cart() : request('/api/cart');
+  async cart(): Promise<Cart> {
+    if (isDemo()) return mockApi.cart();
+    const cart = await request<Cart>('/api/cart');
+    sessionCsrfToken = cart.csrfToken;
+    return cart;
   },
 };
