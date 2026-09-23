@@ -2,9 +2,10 @@ import Fastify from 'fastify';
 import multipart from '@fastify/multipart';
 import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
 import { AttachmentError, extractAttachmentCandidates, MAX_ATTACHMENT_BYTES } from './attachments.js';
-import { routeUserRequest } from './aiRouting.js';
+import { boundedRoutingContext, routeUserRequest } from './aiRouting.js';
 import type { CatalogIndex } from './catalogIndex.js';
 import { ImageInputError, prepareCustomerImage } from './imageInput.js';
+import { DocumentExtractionError, extractDocumentCandidates } from './documentExtraction.js';
 import { createModelGateway, type ModelGateway } from './modelGateway.js';
 import { answerPurchaseTerms, detectsPurchaseTerms } from './policy.js';
 import {
@@ -32,6 +33,9 @@ type Session = {
   proposal: Proposal | null;
   lastProductId: string | null;
   modelCallsUsed: number;
+  recentProductIds: string[];
+  recentCategories: string[];
+  attachmentWindow: { startedAt: number; count: number };
   confirmations: Map<string, Confirmation>;
   lock: Promise<void>;
 };
@@ -46,6 +50,8 @@ const MAX_SESSION_CREATIONS_PER_WINDOW = 300;
 const MAX_SESSION_CREATION_IPS = 4096;
 const MAX_CONCURRENT_LIVE_CATALOG_OPS = 8;
 const MAX_LIVE_CATALOG_OPS_PER_WINDOW = 60;
+const MAX_ATTACHMENTS_PER_SESSION_PER_WINDOW = 8;
+const MAX_ATTACHMENTS_PER_PROCESS_PER_WINDOW = 120;
 const MAX_SEARCH_PRODUCTS = 4;
 const SEARCH_WORDS: Record<string, string> = {
   cable: 'кабель', breaker: 'автомат', socket: 'розетка',
@@ -89,6 +95,16 @@ function cartSnapshot(session: Session) {
   return { items, itemCount: items.reduce((sum, item) => sum + item.quantity, 0) };
 }
 
+function rememberProducts(session: Session, products: readonly Product[]): void {
+  for (const product of products) {
+    session.recentProductIds = [...session.recentProductIds.filter((id) => id !== product.id), product.id].slice(-6);
+    if (product.category) {
+      session.recentCategories = [...session.recentCategories.filter((name) => name !== product.category),
+        product.category].slice(-6);
+    }
+  }
+}
+
 function extractSku(message: string): string | null {
   const labelled = message.match(/артикул(?:ом|а|у)?\s*[:№#]?\s*([A-ZА-ЯЁ0-9][A-ZА-ЯЁ0-9./_-]{2,})/iu);
   if (labelled) return labelled[1].toUpperCase();
@@ -110,6 +126,10 @@ function searchTerms(message: string): string {
 
 function isAddIntent(message: string): boolean {
   return /(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|в\s+корзин|add\s+to\s+cart|себетке(?:\s+\d+(?:\s*дана)?)?\s+қос)/iu.test(message);
+}
+
+function isProductFollowup(message: string): boolean {
+  return /остат(?:ок|ки)|наличи|характеристик|параметр|сертификат|цен[аеуы]|сколько(?:\s+\p{L}+){0,2}\s+стоит|аналог|замен[ау]|қалдық|сипаттам|баға|қанша\s+тұр|балама/iu.test(message);
 }
 
 function isExplicitConfirmation(message: string): boolean {
@@ -169,6 +189,9 @@ function productReply(product: Product, analogs: Analog[], locale: 'ru' | 'kk'):
   const certificate = product.certificateUrl
     ? 'Сертификат: ' + product.certificateUrl
     : (kk ? 'Сертификатқа расталған сілтеме жоқ.' : 'Подтверждённая ссылка на сертификат отсутствует.');
+  const price = product.price
+    ? (kk ? ' Баға: ' : ' Цена: ') + product.price.amount + ' ' + product.price.currency + '.'
+    : (kk ? ' Баға расталмаған.' : ' Цена не подтверждена.');
   const alternative = analogs.length
     ? (kk ? ' Тексерілген сипаттамалары бойынша ықтимал балама: ' : ' Возможный аналог по проверенным характеристикам: ') +
       analogs.map((entry) => entry.product.sku + ' — ' + entry.reason.replace(/[.!?]+$/u, '')).join('; ') + '.'
@@ -178,7 +201,7 @@ function productReply(product: Product, analogs: Analog[], locale: 'ru' | 'kk'):
         : (kk ? ' Демо каталогта балама табылмады.' : ' В демонстрационном каталоге аналог не найден.')
       : '';
   return demo + product.name + ' (' + product.sku + '). ' + availability +
-    (properties ? (kk ? ' Сипаттамалары: ' : ' Характеристики: ') + properties + '.' : '') + ' ' + certificate + alternative;
+    (properties ? (kk ? ' Сипаттамалары: ' : ' Характеристики: ') + properties + '.' : '') + ' ' + certificate + price + alternative;
 }
 
 function escapeHtml(value: string): string {
@@ -224,7 +247,9 @@ export function buildApp(options: {
   let sessionCreationWindow = { startedAt: now(), count: 0 };
   let activeLiveCatalogOps = 0;
   let activeImageJobs = 0;
+  let activeDocumentJobs = 0;
   let activeAttachmentJobs = 0;
+  let attachmentWindow = { startedAt: now(), count: 0 };
   let liveCatalogWindow = { startedAt: now(), count: 0 };
   async function withCatalogBudget<T>(action: () => Promise<T>): Promise<T> {
     if (upstreamCatalog.source !== 'catalog_live') return action();
@@ -345,6 +370,8 @@ export function buildApp(options: {
         csrfToken: randomBytes(32).toString('hex'),
         expiresAt: time + SESSION_MS,
         items: [], proposal: null, lastProductId: null, modelCallsUsed: 0,
+        recentProductIds: [], recentCategories: [],
+        attachmentWindow: { startedAt: time, count: 0 },
         confirmations: new Map(), lock: Promise.resolve(),
       };
       sessions.set(id, session);
@@ -423,7 +450,8 @@ export function buildApp(options: {
     });
   }
 
-  app.get('/api/health', async () => ({ ok: true, catalog: catalog.source === 'catalog_live' ? 'live' : 'demo', model: 'fallback' }));
+  app.get('/api/health', async () => ({ ok: true, catalog: catalog.source === 'catalog_live' ? 'live' : 'demo',
+    model: externalProcessingAllowed || Boolean(options.modelGateway) ? 'ready' : 'fallback' }));
 
   app.get('/api/cart', async (request) => ({
     ...cartSnapshot(sessionOf(request)), cartUrl: CART_URL, mode: 'demo', csrfToken: sessionOf(request).csrfToken,
@@ -442,12 +470,25 @@ export function buildApp(options: {
   app.post('/api/attachments', async (request) => {
     verifyMutation(request);
     if (!request.isMultipart()) throw new ApiFailure(415, 'UNSUPPORTED_FILE', 'Ожидается один файл в multipart/form-data.');
+    const session = sessionOf(request);
+    const time = now();
+    if (time - session.attachmentWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+      session.attachmentWindow = { startedAt: time, count: 0 };
+    }
+    if (time - attachmentWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+      attachmentWindow = { startedAt: time, count: 0 };
+    }
+    if (session.attachmentWindow.count >= MAX_ATTACHMENTS_PER_SESSION_PER_WINDOW ||
+        attachmentWindow.count >= MAX_ATTACHMENTS_PER_PROCESS_PER_WINDOW) {
+      throw new ApiFailure(429, 'ATTACHMENT_RATE_LIMIT', 'Лимит загрузок достигнут. Повторите через минуту.');
+    }
     if (activeAttachmentJobs >= 4) throw new ApiFailure(429, 'ATTACHMENT_BUSY', 'Обработка файлов занята. Повторите позже.');
+    session.attachmentWindow.count++;
+    attachmentWindow.count++;
     activeAttachmentJobs++;
     try {
       const file = await request.file();
       if (!file || file.fieldname !== 'file') throw new ApiFailure(400, 'INVALID_INPUT', 'Передайте один файл в поле file.');
-      const session = sessionOf(request);
       session.proposal = null;
       const bytes = await file.toBuffer();
       if (/\.(?:jpe?g|png)$/iu.test(file.filename) || /^image\/(?:jpeg|png)/iu.test(file.mimetype)) {
@@ -455,66 +496,108 @@ export function buildApp(options: {
         activeImageJobs++;
         try {
           const consent = request.headers['x-photo-consent'] === 'true';
+          const locale = request.headers['x-image-locale'] === 'kk' ? 'kk' : 'ru';
           const canProcessExternally = externalProcessingAllowed || Boolean(options.modelGateway);
           const prepared = await prepareCustomerImage({ buffer: bytes, filename: file.filename, mimeType: file.mimetype }, {
             customerConsented: consent, externalProcessingAllowed: canProcessExternally,
           });
+          const initialWarning = locale === 'kk' && prepared.status === 'manual_review'
+            ? prepared.reason === 'CUSTOMER_CONSENT_REQUIRED'
+              ? 'Фотоны талдау үшін клиенттің жеке келісімі керек. Артикулды мәтінмен енгізіңіз.'
+              : 'Сыртқы фото талдауға сервер рұқсаты жоқ. Артикулды мәтінмен енгізіңіз.'
+            : prepared.warning;
           const manual = { candidates: [], products: [] as Product[], requiresManualReview: true as const,
-            cartChanged: false, factsSource: catalog.source, warning: prepared.warning, requestId: String(request.id) };
+            cartChanged: false, factsSource: catalog.source, warning: initialWarning, requestId: String(request.id) };
           if (prepared.status !== 'ready_for_vision') return { ...manual, photoAnalysis: { status: 'manual_review', reason: prepared.reason } };
           const route = routeUserRequest('', { imagePresent: true, customerConsented: consent,
             externalProcessingAllowed: canProcessExternally, modelCallsUsed: session.modelCallsUsed });
           if (route.executionTier !== 'vision') return { ...manual,
-            warning: 'Лимит анализа фото достигнут. Укажите артикул вручную.',
+            warning: locale === 'kk' ? 'Фото талдау шегі бітті. Артикулды қолмен енгізіңіз.'
+              : 'Лимит анализа фото достигнут. Укажите артикул вручную.',
             photoAnalysis: { status: 'manual_review', reason: 'MODEL_BUDGET' } };
           session.modelCallsUsed++;
-          const observation = await modelGateway.analyzeImage({ ...prepared.image, locale: 'ru' });
+          let observation = await modelGateway.analyzeImage({ ...prepared.image, locale });
           if (!observation.ok) return { ...manual,
-            warning: 'Фото принято, но распознавание сейчас недоступно. Укажите артикул вручную.',
+            warning: locale === 'kk' ? 'Фото қабылданды, бірақ тану қазір қолжетімсіз. Артикулды қолмен енгізіңіз.'
+              : 'Фото принято, но распознавание сейчас недоступно. Укажите артикул вручную.',
             photoAnalysis: { status: 'manual_review', reason: 'MODEL_UNAVAILABLE' } };
-          const ids = new Set<string>();
-          const observedSkuById = new Map<string, string>();
-          for (const sku of observation.skus.slice(0, 4)) {
-            for (const row of options.catalogIndex?.findExactSku(sku) ?? []) {
-              ids.add(row.id);
-              observedSkuById.set(row.id, sku);
+          const matchObservations = async (skus: readonly string[], terms: readonly string[]): Promise<Product[]> => {
+            const ids = new Set<string>();
+            const observedSkuById = new Map<string, string>();
+            for (const sku of skus.slice(0, 4)) {
+              for (const row of options.catalogIndex?.findExactSku(sku) ?? []) {
+                ids.add(row.id);
+                observedSkuById.set(row.id, sku);
+              }
             }
-          }
-          for (const phrase of observation.searchTerms.slice(0, 3)) {
-            const query = searchTerms(phrase).slice(0, 200);
-            if (!query) continue;
-            let rows = options.catalogIndex?.search(query, { limit: 2 }) ?? [];
-            if (!rows.length) rows = options.catalogIndex?.search(query, { match: 'any', limit: 2 }) ?? [];
-            for (const row of rows) ids.add(row.id);
-          }
-          const selectedIds = [...ids].slice(0, 4);
-          const productReads = await Promise.allSettled(selectedIds.map((id) => catalog.getById(id)));
-          const products = productReads.flatMap((result, position) => {
-            const expectedSku = observedSkuById.get(selectedIds[position]!);
-            return result.status === 'fulfilled' && result.value &&
-              (!expectedSku || result.value.sku.toLocaleUpperCase('ru') === expectedSku.toLocaleUpperCase('ru'))
-              ? [result.value] : [];
-          });
-          if (!options.catalogIndex && observation.skus.length) {
-            for (const sku of observation.skus.slice(0, 2)) {
-              try {
-                const product = await catalog.findBySku(sku);
-                if (product && !products.some((item) => item.id === product.id)) products.push(product);
-              } catch (error) {
-                if (!(error instanceof CatalogError) || error.code !== 'CATALOG_SEARCH_INCOMPLETE') throw error;
+            for (const phrase of terms.slice(0, 3)) {
+              const query = searchTerms(phrase).slice(0, 200);
+              if (!query) continue;
+              let rows = options.catalogIndex?.search(query, { limit: 2 }) ?? [];
+              if (!rows.length) rows = options.catalogIndex?.search(query, { match: 'any', limit: 2 }) ?? [];
+              for (const row of rows) ids.add(row.id);
+            }
+            const selectedIds = [...ids].slice(0, 4);
+            const productReads = await Promise.allSettled(selectedIds.map((id) => catalog.getById(id)));
+            const products = productReads.flatMap((result, position) => {
+              const expectedSku = observedSkuById.get(selectedIds[position]!);
+              return result.status === 'fulfilled' && result.value &&
+                (!expectedSku || result.value.sku.toLocaleUpperCase('ru') === expectedSku.toLocaleUpperCase('ru'))
+                ? [result.value] : [];
+            });
+            if (!options.catalogIndex && skus.length) {
+              for (const sku of skus.slice(0, 2)) {
+                try {
+                  const product = await catalog.findBySku(sku);
+                  if (product && !products.some((item) => item.id === product.id)) products.push(product);
+                } catch (error) {
+                  if (!(error instanceof CatalogError) || error.code !== 'CATALOG_SEARCH_INCOMPLETE') throw error;
+                }
+              }
+            }
+            return products;
+          };
+          let products = await matchObservations(observation.skus, observation.searchTerms);
+          let escalated = false;
+          const exactSkuMatched = products.some((product) => observation.skus.some((sku) =>
+            product.sku.toLocaleUpperCase('ru') === sku.toLocaleUpperCase('ru')));
+          if ((!products.length || !exactSkuMatched) && options.catalogIndex?.size) {
+            const secondRoute = routeUserRequest('', { imagePresent: true, customerConsented: consent,
+              externalProcessingAllowed: canProcessExternally, modelCallsUsed: session.modelCallsUsed });
+            if (secondRoute.executionTier === 'vision') {
+              session.modelCallsUsed++;
+              escalated = true;
+              const stronger = await modelGateway.analyzeImage({ ...prepared.image, locale, highAccuracy: true });
+              if (stronger.ok) {
+                const strongerProducts = await matchObservations(stronger.skus, stronger.searchTerms);
+                if (strongerProducts.length) {
+                  observation = stronger;
+                  products = strongerProducts;
+                }
               }
             }
           }
           const reply = products.length
-            ? 'По признакам на фото найдены возможные товары. Сверьте артикул на изделии перед покупкой. ' +
-              products.map((product) => productReply(product, [], 'ru')).join(' ')
-            : 'Не удалось подтвердить товар по фото в доступной части каталога. Пришлите чёткое фото маркировки или артикул.';
+            ? (locale === 'kk'
+              ? 'Фотодағы белгілер бойынша ықтимал тауарлар табылды. Сатып аларда бұйымдағы артикулды салыстырыңыз. '
+              : 'По признакам на фото найдены возможные товары. Сверьте артикул на изделии перед покупкой. ') +
+              products.map((product) => productReply(product, [], locale)).join(' ')
+            : locale === 'kk'
+              ? 'Фото бойынша қолжетімді каталогта тауар расталмады. Таңбалаудың анық фотосын немесе артикулын жіберіңіз.'
+              : 'Не удалось подтвердить товар по фото в доступной части каталога. Пришлите чёткое фото маркировки или артикул.';
+          rememberProducts(session, products);
+          session.lastProductId = null;
           return { ...manual, products, reply,
             warning: products.length
-              ? 'Распознанные признаки фото являются подсказками. Показанные товар и остаток сверены по текущей карточке каталога; совместимость требует отдельной проверки.'
-              : 'Признаки с фото не удалось подтвердить в доступной части каталога; товар и остаток остаются неизвестными.',
+              ? locale === 'kk'
+                ? 'Фотода танылған белгілер тек болжам. Көрсетілген тауар мен қалдық каталогтың ағымдағы карточкасымен тексерілді; үйлесімділікті бөлек тексеріңіз.'
+                : 'Распознанные признаки фото являются подсказками. Показанные товар и остаток сверены по текущей карточке каталога; совместимость требует отдельной проверки.'
+              : locale === 'kk'
+                ? 'Фото белгілері каталогта расталмады; тауар мен қалдық белгісіз.'
+                : 'Признаки с фото не удалось подтвердить в доступной части каталога; товар и остаток остаются неизвестными.',
             photoAnalysis: { status: 'analyzed', observedSkus: observation.skus,
-              searchTerms: observation.searchTerms, observationsUnverified: true, model: observation.model } };
+              searchTerms: observation.searchTerms, observationsUnverified: true,
+              model: observation.model, escalated } };
         } finally {
           activeImageJobs--;
         }
@@ -522,7 +605,23 @@ export function buildApp(options: {
       const result = await extractAttachmentCandidates({
         buffer: bytes, filename: file.filename, mimeType: file.mimetype,
       });
-      return { ...result, requestId: String(request.id) };
+      if (result.declaredType === 'pdf' || result.declaredType === 'docx' || result.declaredType === 'xlsx') {
+        if (activeDocumentJobs >= 2) throw new ApiFailure(429, 'DOCUMENT_BUSY', 'Обработка документов занята. Повторите позже.');
+        activeDocumentJobs++;
+        try {
+          const extracted = await extractDocumentCandidates(result.declaredType, bytes);
+          const candidateSkus = [...new Set(extracted.candidates.map((candidate) => candidate.sku))].slice(0, 4);
+          const current = await Promise.allSettled(candidateSkus.map((sku) => catalog.findBySku(sku)));
+          const products = current.flatMap((entry, position) => entry.status === 'fulfilled' && entry.value &&
+            entry.value.sku.toLocaleUpperCase('ru') === candidateSkus[position]!.toLocaleUpperCase('ru')
+            ? [entry.value] : []);
+          return { ...result, candidates: extracted.candidates, products, warning: extracted.warning,
+            cartChanged: false, factsSource: catalog.source, requestId: String(request.id) };
+        } finally {
+          activeDocumentJobs--;
+        }
+      }
+      return { ...result, cartChanged: false, requestId: String(request.id) };
     } finally {
       activeAttachmentJobs--;
     }
@@ -553,10 +652,12 @@ export function buildApp(options: {
 
     // Any intervening message invalidates an old consent request.
     session.proposal = null;
-    const route = routeUserRequest(message, {
+    const route = routeUserRequest(message, boundedRoutingContext({
       modelCallsUsed: session.modelCallsUsed,
       externalProcessingAllowed: externalProcessingAllowed || Boolean(options.modelGateway),
-    });
+      recentProductIds: session.recentProductIds,
+      recentCategories: session.recentCategories,
+    }));
     if (route.task === 'unsafe') return { ...basic, reply: locale === 'kk'
       ? 'Құпия деректерді немесе ішкі нұсқауларды аша алмаймын. Тауар туралы сұрағыңызды жазыңыз.'
       : 'Не могу раскрывать секреты или внутренние инструкции. Задайте вопрос о товаре.' };
@@ -567,15 +668,33 @@ export function buildApp(options: {
       return { ...basic, reply: terms.reply, factsSource: 'partner_policy',
         sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt };
     }
+    if (!sku && session.lastProductId && route.task === 'search' && isProductFollowup(message)) {
+      const product = await catalog.getById(session.lastProductId);
+      if (product) {
+        rememberProducts(session, [product]);
+        const analogs = product.stock.status === 'out_of_stock'
+          ? (await catalog.findAnalogs(product)).map((analog) => localizeAnalog(analog, locale)) : [];
+        return { ...basic, products: [product], analogs, reply: productReply(product, analogs, locale), modelTier: 'rules' };
+      }
+      session.lastProductId = null;
+    }
     if (route.task === 'multi_category' || route.task === 'project' || (route.task === 'search' && !sku)) {
-      let products = await indexedProducts(message, route.categoriesMentioned, route.task === 'project');
+      const comparison = /сравн|что\s+лучше|қайсысы\s+жақсы/iu.test(message) && session.recentProductIds.length >= 2;
+      let products = comparison
+        ? (await Promise.all(session.recentProductIds.slice(-2).map((id) => catalog.getById(id))))
+          .filter((item): item is Product => item !== null)
+        : await indexedProducts(message, route.categoriesMentioned, route.task === 'project');
       if (products.length) {
         let model: string | undefined;
         // Reserve after the catalog await. Concurrent messages cannot both
         // consume the same final per-session model-call slot.
-        const currentTier = routeUserRequest(message, { modelCallsUsed: session.modelCallsUsed,
-          externalProcessingAllowed: externalProcessingAllowed || Boolean(options.modelGateway) }).executionTier;
-        if (currentTier === 'light' || currentTier === 'deep') {
+        const currentTier = routeUserRequest(message, boundedRoutingContext({
+          modelCallsUsed: session.modelCallsUsed,
+          externalProcessingAllowed: externalProcessingAllowed || Boolean(options.modelGateway),
+          recentProductIds: session.recentProductIds,
+          recentCategories: session.recentCategories,
+        })).executionTier;
+        if (!comparison && (currentTier === 'light' || currentTier === 'balanced' || currentTier === 'deep')) {
           session.modelCallsUsed++;
           const result = await modelGateway.answerWithCandidates({
             message, locale, tier: currentTier, candidates: products,
@@ -584,13 +703,27 @@ export function buildApp(options: {
             model = result.model;
             if (result.referencedProductIds.length) {
               const ranked = new Map(products.map((item) => [item.id, item]));
-              products = result.referencedProductIds.flatMap((id) => ranked.get(id) ? [ranked.get(id)!] : []);
+              const preferred = result.referencedProductIds.flatMap((id) => ranked.get(id) ? [ranked.get(id)!] : []);
+              // Model IDs only change order. They cannot silently remove a
+              // requested category or make the catalog appear incomplete.
+              products = [...preferred, ...products.filter((item) => !preferred.some((entry) => entry.id === item.id))];
             }
           }
         }
         // A collection never selects a lastProductId for an implicit cart add.
         session.lastProductId = null;
-        const intro = route.task === 'project'
+        rememberProducts(session, products);
+        const differentCategories = comparison && products.length === 2 && products.every((item) => item.category) &&
+          products[0]!.category!.toLocaleLowerCase('ru') !== products[1]!.category!.toLocaleLowerCase('ru');
+        const intro = comparison
+          ? differentCategories
+            ? (locale === 'kk'
+              ? 'Соңғы екі тауар әртүрлі санатта. Оларды бір-бірінің баламасы деп санауға болмайды; қолдану мақсатын нақтылаңыз.'
+              : 'Последние два товара из разных категорий. Их нельзя считать заменой друг другу; уточните назначение.')
+            : (locale === 'kk'
+              ? 'Соңғы екі тауардың ағымдағы карточкаларын көрсетемін. Таңдау үшін маңызды параметрлерді нақтылаңыз.'
+              : 'Показываю текущие карточки двух последних товаров. Уточните важные для выбора параметры.')
+          : route.task === 'project'
           ? (locale === 'kk'
             ? 'Үй жобасы үшін бөлмелер санын, жүктемені және қажетті сызбаны нақтылаңыз. Қазір тек каталогтағы ықтимал тауарларды көрсетемін.'
             : 'Для проекта дома уточните число помещений, нагрузку и схему. Пока показываю только возможные товары из каталога.')
@@ -612,6 +745,7 @@ export function buildApp(options: {
       : (locale === 'kk' ? 'Сипаттамалары мен қоймадағы санын тексеру үшін тауар артикулын көрсетіңіз.' : 'Укажите артикул товара, чтобы проверить характеристики и остаток.') };
 
     session.lastProductId = product.id;
+    rememberProducts(session, [product]);
     const analogs = product.stock.status === 'out_of_stock'
       ? (await catalog.findAnalogs(product)).map((analog) => localizeAnalog(analog, locale)) : [];
     const response = { ...basic, products: [product], analogs, reply: productReply(product, analogs, locale) };
@@ -651,7 +785,8 @@ export function buildApp(options: {
 
   app.setErrorHandler((error, request, reply) => {
     const failure = error instanceof ApiFailure ? error : null;
-    const attachmentFailure = error instanceof AttachmentError || error instanceof ImageInputError ? error : null;
+    const attachmentFailure = error instanceof AttachmentError || error instanceof ImageInputError ||
+      error instanceof DocumentExtractionError ? error : null;
     const errorStatus = isRecord(error) && typeof error.statusCode === 'number' ? error.statusCode : 503;
     const catalogStatus = error instanceof CatalogError
       ? error.code === 'CATALOG_UNAUTHORIZED' ? 403 : error.code === 'CATALOG_RATE_LIMITED' ? 429 : 503

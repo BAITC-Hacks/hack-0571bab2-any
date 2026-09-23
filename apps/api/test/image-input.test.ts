@@ -63,6 +63,10 @@ test('JPEG bytes are never returned when customer consent or partner permission 
   if (noPermission.status !== 'manual_review') return;
   assert.equal(noPermission.reason, 'EXTERNAL_PROCESSING_NOT_ALLOWED');
   assert.equal('image' in noPermission, false);
+  const malformed = { buffer: Buffer.from('not decoded'), filename: 'broken.jpg', mimeType: 'image/jpeg' };
+  assert.equal((await prepareCustomerImage(malformed, { customerConsented: false,
+    externalProcessingAllowed: true })).status, 'manual_review');
+  await expectError('INVALID_IMAGE', () => prepareCustomerImage(malformed, allowed));
 });
 
 test('PNG re-encodes pixels and strips text/location chunks', async () => {

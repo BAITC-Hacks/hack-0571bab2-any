@@ -27,10 +27,10 @@ test('ambiguous name search uses light tier only with permission and budget', ()
   assert.equal(routeUserRequest(message, { externalProcessingAllowed: true, modelCallsUsed: 8 }).executionTier, 'rules');
 });
 
-test('multiple categories and a whole-house project get guarded deep routing', () => {
+test('multiple categories and a whole-house project get balanced and deep routing', () => {
   const multi = routeUserRequest('Нужны кабели, розетки и светильники', { externalProcessingAllowed: true });
   assert.equal(multi.task, 'multi_category');
-  assert.equal(multi.executionTier, 'deep');
+  assert.equal(multi.executionTier, 'balanced');
   assert.deepEqual(multi.categoriesMentioned, ['cable', 'socket', 'lighting']);
   assert.equal(multi.maxCandidateFacts, 8);
 
@@ -53,7 +53,7 @@ test('comparison routing uses bounded session context without a raw transcript',
     ...context, modelCallsUsed: 0,
   });
   assert.equal(route.task, 'multi_category');
-  assert.equal(route.executionTier, 'deep');
+  assert.equal(route.executionTier, 'balanced');
 });
 
 test('photo requires consent and permission; adversarial request never reaches a model', () => {

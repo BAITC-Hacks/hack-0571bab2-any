@@ -22,11 +22,12 @@ export type CandidateAnswer =
   | { ok: false; reason: ModelFailureReason; text: null; referencedProductIds: [] };
 
 export type ModelGateway = {
-  analyzeImage(input: { buffer: Buffer; mimeType: 'image/jpeg' | 'image/png'; locale: ModelLocale }): Promise<ImageObservation>;
+  analyzeImage(input: { buffer: Buffer; mimeType: 'image/jpeg' | 'image/png'; locale: ModelLocale;
+    highAccuracy?: boolean }): Promise<ImageObservation>;
   answerWithCandidates(input: {
     message: string;
     locale: ModelLocale;
-    tier: 'light' | 'deep';
+    tier: 'light' | 'balanced' | 'deep';
     candidates: readonly Product[];
   }): Promise<CandidateAnswer>;
 };
@@ -34,7 +35,7 @@ export type ModelGateway = {
 export type ModelGatewayConfig = {
   apiKey?: string;
   fetchImpl?: typeof fetch;
-  models?: { light?: string; deep?: string; vision?: string };
+  models?: { light?: string; balanced?: string; deep?: string; vision?: string };
   timeoutMs?: number;
 };
 
@@ -180,11 +181,12 @@ export function createModelGateway(config: ModelGatewayConfig): ModelGateway {
   const apiKey = typeof config.apiKey === 'string' ? config.apiKey.trim() : '';
   const fetchImpl = config.fetchImpl ?? fetch;
   const timeoutMs = Number.isSafeInteger(config.timeoutMs) && config.timeoutMs! >= 1_000 && config.timeoutMs! <= 20_000
-    ? config.timeoutMs! : 10_000;
+    ? config.timeoutMs! : 15_000;
   const models = {
     light: modelName(config.models?.light, 'gpt-6-luna'),
-    deep: modelName(config.models?.deep, 'gpt-6-sol'),
-    vision: modelName(config.models?.vision, 'gpt-6-luna'),
+    balanced: modelName(config.models?.balanced, 'gpt-6-sol'),
+    deep: modelName(config.models?.deep, 'gpt-6-astra'),
+    vision: modelName(config.models?.vision, 'gpt-6-sol'),
   };
   let activeCalls = 0;
   let callsStarted = 0;
@@ -223,11 +225,12 @@ export function createModelGateway(config: ModelGatewayConfig): ModelGateway {
   }
 
   return {
-    async analyzeImage({ buffer, mimeType, locale }): Promise<ImageObservation> {
+    async analyzeImage({ buffer, mimeType, locale, highAccuracy }): Promise<ImageObservation> {
       if ((locale !== 'ru' && locale !== 'kk') || !isValidImage(buffer, mimeType)) return emptyImage('invalid_input');
       const response = await request({
-        model: models.vision, store: false, background: false, max_output_tokens: 240,
-        reasoning: { effort: 'none' },
+        model: highAccuracy ? models.deep : models.vision, store: false, background: false,
+        max_output_tokens: highAccuracy ? 1_000 : 240,
+        reasoning: { effort: highAccuracy ? 'low' : 'none' },
         instructions: IMAGE_INSTRUCTIONS,
         input: [{ role: 'user', content: [
           { type: 'input_text', text: locale === 'kk' ? 'Суреттегі затты анықтауға болатын жазуды және сипаттаманы ғана бер.' : 'Верни только видимые артикулы и краткие признаки товара на фото.' },
@@ -248,20 +251,23 @@ export function createModelGateway(config: ModelGatewayConfig): ModelGateway {
         const searchTerms = [...new Set(parsed.search_terms.map((value) => limitedString(value, 80)).filter(
           (value): value is string => value !== null,
         ))].slice(0, 6);
-        return { ok: true, skus, searchTerms, model: models.vision, usage: safeUsage(response.data.usage) };
+        return { ok: true, skus, searchTerms, model: highAccuracy ? models.deep : models.vision,
+          usage: safeUsage(response.data.usage) };
       } catch { return emptyImage('invalid_response'); }
     },
 
     async answerWithCandidates({ message, locale, tier, candidates }): Promise<CandidateAnswer> {
       const query = boundedText(message, MAX_MESSAGE_CHARS);
-      if (!query || (locale !== 'ru' && locale !== 'kk') || (tier !== 'light' && tier !== 'deep') || !Array.isArray(candidates)) {
+      if (!query || (locale !== 'ru' && locale !== 'kk') ||
+        (tier !== 'light' && tier !== 'balanced' && tier !== 'deep') || !Array.isArray(candidates)) {
         return emptyAnswer('invalid_input');
       }
       const { facts, ids } = candidateFacts(candidates);
       const model = models[tier];
       const response = await request({
-        model, store: false, background: false, max_output_tokens: tier === 'deep' ? 500 : 240,
-        reasoning: { effort: tier === 'deep' ? 'low' : 'none' },
+        model, store: false, background: false,
+        max_output_tokens: tier === 'deep' ? 1_000 : tier === 'balanced' ? 500 : 240,
+        reasoning: { effort: tier === 'deep' ? 'medium' : tier === 'balanced' ? 'low' : 'none' },
         instructions: ANSWER_INSTRUCTIONS,
         input: [{ role: 'user', content: [{ type: 'input_text', text: JSON.stringify({
           locale, question: query, verified_product_facts: facts,

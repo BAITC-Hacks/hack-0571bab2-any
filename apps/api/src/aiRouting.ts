@@ -3,7 +3,7 @@
  * authorizes a cart write. The caller may use a model only after checking its
  * own permission and call budget; otherwise it keeps the local fallback.
  */
-export type AssistantTier = 'rules' | 'light' | 'deep' | 'vision' | 'refuse';
+export type AssistantTier = 'rules' | 'light' | 'balanced' | 'deep' | 'vision' | 'refuse';
 export type AssistantTask = 'known_item' | 'purchase_terms' | 'cart' | 'search' | 'multi_category' | 'project' | 'photo' | 'unsafe';
 
 export type RoutingContext = {
@@ -70,11 +70,11 @@ export function routeUserRequest(message: string, context: RoutingContext = {}):
   } else if (projectPattern.test(clean)) {
     task = 'project'; desiredTier = 'deep'; requiresClarification = true;
   } else if (/сравн|что\s+лучше|қайсысы\s+жақсы/iu.test(clean) && (context.recentProductIds?.length ?? 0) >= 2) {
-    task = 'multi_category'; desiredTier = 'deep';
+    task = 'multi_category'; desiredTier = 'balanced';
   } else if (skus === 1 && categoriesMentioned.length < 2) {
     task = 'known_item'; desiredTier = 'rules';
   } else if (skus > 1 || categoriesMentioned.length >= 2) {
-    task = 'multi_category'; desiredTier = 'deep';
+    task = 'multi_category'; desiredTier = 'balanced';
   } else {
     task = 'search'; desiredTier = 'light';
   }
@@ -82,12 +82,13 @@ export function routeUserRequest(message: string, context: RoutingContext = {}):
   const allowed = context.externalProcessingAllowed === true &&
     (desiredTier !== 'vision' || context.customerConsented === true) &&
     (context.modelCallsUsed ?? 0) < MAX_MODEL_CALLS_PER_SESSION;
-  const executionTier = desiredTier === 'light' || desiredTier === 'deep' || desiredTier === 'vision'
+  const executionTier = desiredTier === 'light' || desiredTier === 'balanced' || desiredTier === 'deep' || desiredTier === 'vision'
     ? (allowed ? desiredTier : 'rules') : desiredTier;
   return {
     task, desiredTier, executionTier,
-    maxCandidateFacts: desiredTier === 'deep' ? 8 : desiredTier === 'light' ? 5 : 0,
-    maxOutputTokens: executionTier === 'deep' ? 500 : executionTier === 'light' || executionTier === 'vision' ? 240 : 0,
+    maxCandidateFacts: desiredTier === 'deep' || desiredTier === 'balanced' ? 8 : desiredTier === 'light' ? 5 : 0,
+    maxOutputTokens: executionTier === 'deep' ? 1_000 : executionTier === 'balanced' ? 500
+      : executionTier === 'light' || executionTier === 'vision' ? 240 : 0,
     requiresClarification,
     categoriesMentioned,
   };

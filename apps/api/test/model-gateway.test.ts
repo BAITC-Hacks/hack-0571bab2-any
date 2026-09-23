@@ -28,7 +28,7 @@ test('missing key returns a safe fallback and makes no request', async () => {
   assert.equal(calls, 0);
 });
 
-test('light and deep requests are bounded, stateless and omit secrets and unnecessary catalog fields', async () => {
+test('light, balanced and deep requests use escalating models without sending secrets or unneeded fields', async () => {
   const bodies: Record<string, unknown>[] = [];
   const gateway = createModelGateway({ apiKey: 'synthetic-local-key', fetchImpl: async (_url, init) => {
     assert.equal(_url, 'https://api.openai.com/v1/responses');
@@ -38,8 +38,10 @@ test('light and deep requests are bounded, stateless and omit secrets and unnece
   } });
   const input = { message: 'Нужен автомат для дома', locale: 'ru' as const, candidates: [candidate] };
   const light = await gateway.answerWithCandidates({ ...input, tier: 'light' });
+  const balanced = await gateway.answerWithCandidates({ ...input, tier: 'balanced' });
   const deep = await gateway.answerWithCandidates({ ...input, tier: 'deep' });
   assert.equal(light.ok, true);
+  assert.equal(balanced.ok, true);
   assert.equal(deep.ok, true);
   if (light.ok) {
     assert.equal(light.text, 'Уточните нужное количество.');
@@ -48,10 +50,13 @@ test('light and deep requests are bounded, stateless and omit secrets and unnece
   }
   assert.equal(bodies[0]?.model, 'gpt-6-luna');
   assert.equal(bodies[1]?.model, 'gpt-6-sol');
+  assert.equal(bodies[2]?.model, 'gpt-6-astra');
   assert.equal(bodies[0]?.store, false);
   assert.equal(bodies[0]?.background, false);
   assert.equal(bodies[0]?.max_output_tokens, 240);
   assert.equal(bodies[1]?.max_output_tokens, 500);
+  assert.equal(bodies[2]?.max_output_tokens, 1_000);
+  assert.deepEqual(bodies[2]?.reasoning, { effort: 'medium' });
   assert.equal('tools' in bodies[0]!, false);
   assert.equal('previous_response_id' in bodies[0]!, false);
   const serialized = JSON.stringify(bodies);
@@ -73,10 +78,23 @@ test('photo observations are explicitly unverified and restricted to syntactical
     assert.deepEqual(result.skus, ['ABC-123']);
     assert.deepEqual(result.searchTerms, ['автомат 16 А', 'щиток']);
   }
-  assert.equal(requestBody?.model, 'gpt-6-luna');
+  assert.equal(requestBody?.model, 'gpt-6-sol');
   assert.equal(requestBody?.store, false);
   assert.equal(requestBody?.max_output_tokens, 240);
   assert.match(JSON.stringify(requestBody), /data:image\/png;base64,/u);
+});
+
+test('hard photo recognition uses Astra with supported reasoning effort', async () => {
+  let requestBody: Record<string, unknown> | null = null;
+  const gateway = createModelGateway({ apiKey: 'synthetic-local-key', fetchImpl: async (_url, init) => {
+    requestBody = JSON.parse(String(init?.body)) as Record<string, unknown>;
+    return modelResponse({ skus: [], search_terms: [] });
+  } });
+  assert.equal((await gateway.analyzeImage({ buffer: tinyPng, mimeType: 'image/png', locale: 'ru',
+    highAccuracy: true })).ok, true);
+  assert.equal(requestBody?.model, 'gpt-6-astra');
+  assert.deepEqual(requestBody?.reasoning, { effort: 'low' });
+  assert.equal(requestBody?.max_output_tokens, 1_000);
 });
 
 test('invalid inputs and oversized output fail closed without exposing upstream messages', async () => {

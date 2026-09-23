@@ -24,6 +24,28 @@ const sampleFiles: AttachmentInput[] = [
   { filename: 'photo.jpg', mimeType: 'image/jpeg', buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0xff, 0xd9]) },
 ];
 
+function syntheticPdf(line: string): Buffer {
+  const stream = `BT /F1 12 Tf 72 720 Td (${line}) Tj ET`;
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(stream)} >>\nstream\n${stream}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let body = '%PDF-1.4\n';
+  const offsets: number[] = [];
+  for (const [index, object] of objects.entries()) {
+    offsets.push(Buffer.byteLength(body));
+    body += `${index + 1} 0 obj\n${object}\nendobj\n`;
+  }
+  const xref = Buffer.byteLength(body);
+  body += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const offset of offsets) body += `${String(offset).padStart(10, '0')} 00000 n \n`;
+  body += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(body);
+}
+
 test('supported formats return no invented candidates and an explicit manual-review warning', async () => {
   for (const file of sampleFiles) {
     const result = await extractAttachmentCandidates(file);
@@ -75,7 +97,7 @@ test('unsafe or missing filenames are rejected', async () => {
   }
 });
 
-test('multipart endpoint returns review warning without changing the cart', async (t) => {
+test('multipart PDF extracts a candidate and fresh product without changing the cart', async (t) => {
   const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: 'http://api.test' });
   t.after(() => app.close());
   const first = await app.inject({ method: 'GET', url: '/api/cart', headers: { host: 'api.test' } });
@@ -92,16 +114,22 @@ test('multipart endpoint returns review warning without changing the cart', asyn
       Buffer.from('\r\n--' + boundary + '--\r\n'),
     ]),
   });
-  const accepted = await upload(Buffer.from('%PDF-1.7\nABC-123 2'));
+  const accepted = await upload(syntheticPdf('ABC-123 2'));
   assert.equal(accepted.statusCode, 200);
-  assert.deepEqual(accepted.json().candidates, []);
+  assert.deepEqual(accepted.json().candidates, [{ sku: 'ABC-123', quantity: 2, confidence: 'low' }]);
+  assert.equal(accepted.json().products[0].sku, 'ABC-123');
+  assert.equal(accepted.json().cartChanged, false);
   assert.equal(accepted.json().requiresManualReview, true);
-  assert.match(accepted.json().warning, /не включено/);
+  assert.match(accepted.json().warning, /корзина не изменена/);
   assert.equal((await app.inject({ method: 'GET', url: '/api/cart', headers: { host: 'api.test', cookie } })).json().itemCount, 0);
 
   const rejected = await upload(Buffer.from('not a PDF'));
   assert.equal(rejected.statusCode, 415);
   assert.equal(rejected.json().error.code, 'UNSUPPORTED_FILE');
+
+  const damaged = await upload(Buffer.from('%PDF-1.7\nABC-123 2'));
+  assert.equal(damaged.statusCode, 415);
+  assert.equal(damaged.json().error.code, 'INVALID_DOCUMENT');
 
   const tooLarge = await upload(Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0));
   assert.equal(tooLarge.statusCode, 413);

@@ -303,6 +303,7 @@ test('health checks do not allocate a browser session', async (t) => {
   const response = await app.inject({ method: 'GET', url: '/api/health', headers: { host } });
   assert.equal(response.statusCode, 200);
   assert.equal(response.headers['set-cookie'], undefined);
+  assert.equal(response.json().model, 'fallback');
 });
 
 test('a different product question invalidates an older cart proposal before text confirmation', async (t) => {

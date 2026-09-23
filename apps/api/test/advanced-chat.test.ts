@@ -84,10 +84,11 @@ async function cartCount(app: App, session: Session): Promise<number> {
   return response.json().itemCount;
 }
 
-function uploadPhoto(app: App, session: Session, image: Buffer, consent: boolean) {
+function uploadPhoto(app: App, session: Session, image: Buffer, consent: boolean, locale: 'ru' | 'kk' = 'ru') {
   const boundary = 'hackalem-synthetic-photo-boundary';
   return app.inject({ method: 'POST', url: '/api/attachments', headers: {
     ...mutationHeaders(session), 'x-photo-consent': consent ? 'true' : 'false',
+    'x-image-locale': locale,
     'content-type': `multipart/form-data; boundary=${boundary}`,
   }, payload: Buffer.concat([
     Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="panel.png"\r\nContent-Type: image/png\r\n\r\n`),
@@ -106,9 +107,9 @@ test('multi-category, whole-house and name searches use fresh details and bounde
   const multi = await chat(app, session, 'Мне нужны кабель и розетка для квартиры');
   assert.equal(multi.statusCode, 200);
   assert.deepEqual(multi.json().products.map((product: Product) => product.sku), ['SYN-101', 'SYN-202']);
-  assert.equal(multi.json().modelTier, 'deep');
+  assert.equal(multi.json().modelTier, 'balanced');
   assert.deepEqual(fixture.answerCalls[0]?.candidates.map((product) => product.id), ['101', '202']);
-  assert.equal(fixture.answerCalls[0]?.tier, 'deep');
+  assert.equal(fixture.answerCalls[0]?.tier, 'balanced');
   assert.match(multi.json().reply, /Свежий синтетический медный кабель/);
   assert.doesNotMatch(multi.json().reply, /Старый медный кабель|Цена 0|Заказ уже оформлен/);
 
@@ -127,6 +128,58 @@ test('multi-category, whole-house and name searches use fresh details and bounde
   assert.equal(fixture.answerCalls[2]?.tier, 'light');
   assert.equal(name.json().products[0].stock.available, 7);
   assert.ok(fixture.detailsRead.filter((id) => id === '101').length >= 3);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('model ranking cannot remove a requested category or introduce a product', async (t) => {
+  const fixture = fixtures();
+  fixture.modelGateway.answerWithCandidates = async (input) => ({ ok: true, text: 'invented claim',
+    referencedProductIds: [input.candidates[1]!.id, 'unverified-id'], model: 'synthetic-text-model',
+    usage: { inputTokens: 1, outputTokens: 1 } });
+  const app = buildApp({ catalog: fixture.catalog, catalogIndex: fixture.index,
+    modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const response = await chat(app, session, 'Нужны кабель и розетка');
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(response.json().products.map((product: Product) => product.sku).sort(), ['SYN-101', 'SYN-202']);
+  assert.doesNotMatch(response.json().reply, /invented claim/);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('comparison rereads recent products, explains different categories and saves model tokens', async (t) => {
+  const fixture = fixtures();
+  const app = buildApp({ catalog: fixture.catalog, modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  assert.equal((await chat(app, session, 'Есть SYN-101?')).statusCode, 200);
+  assert.equal((await chat(app, session, 'Есть SYN-202?')).statusCode, 200);
+
+  const comparison = await chat(app, session, 'Что лучше из этих двух?');
+  assert.equal(comparison.statusCode, 200);
+  assert.deepEqual(comparison.json().products.map((product: Product) => product.sku), ['SYN-101', 'SYN-202']);
+  assert.equal(comparison.json().modelTier, 'rules');
+  assert.match(comparison.json().reply, /из разных категорий/);
+  assert.deepEqual(fixture.detailsRead, ['101', '202']);
+  assert.equal(fixture.answerCalls.length, 0);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('follow-up about a recent item rereads stock and states unknown price without model use', async (t) => {
+  const fixture = fixtures();
+  const app = buildApp({ catalog: fixture.catalog, catalogIndex: fixture.index,
+    modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  assert.equal((await chat(app, session, 'Есть SYN-101?')).statusCode, 200);
+
+  const followup = await chat(app, session, 'А сколько он стоит?');
+  assert.equal(followup.statusCode, 200);
+  assert.deepEqual(followup.json().products.map((product: Product) => product.sku), ['SYN-101']);
+  assert.match(followup.json().reply, /Цена не подтверждена/);
+  assert.deepEqual(fixture.detailsRead, ['101']);
+  assert.equal(fixture.answerCalls.length, 0);
   assert.equal(await cartCount(app, session), 0);
 });
 
@@ -176,5 +229,95 @@ test('photo needs consent; fake vision SKU is checked against fresh catalog deta
   assert.equal(fixture.imageCalls.length, 1);
   assert.equal(fixture.imageCalls[0]?.mimeType, 'image/png');
   assert.ok(fixture.imageCalls[0]?.buffer.length);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('photo escalates once when light vision cannot match a current catalog product', async (t) => {
+  const fixture = fixtures();
+  const visionTiers: boolean[] = [];
+  fixture.modelGateway.analyzeImage = async (input) => {
+    visionTiers.push(input.highAccuracy === true);
+    return { ok: true,
+      skus: input.highAccuracy ? ['SYN-101'] : ['BAD-999'], searchTerms: [],
+      model: input.highAccuracy ? 'synthetic-deep-vision' : 'synthetic-light-vision',
+      usage: { inputTokens: 1, outputTokens: 1 } };
+  };
+  const app = buildApp({ catalog: fixture.catalog, catalogIndex: fixture.index,
+    modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const image = await sharp({ create: { width: 3, height: 2, channels: 3,
+    background: { r: 30, g: 80, b: 120 } } }).png().toBuffer();
+
+  const response = await uploadPhoto(app, session, image, true);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(visionTiers, [false, true]);
+  assert.equal(response.json().photoAnalysis.escalated, true);
+  assert.equal(response.json().photoAnalysis.model, 'synthetic-deep-vision');
+  assert.deepEqual(response.json().products.map((product: Product) => product.sku), ['SYN-101']);
+  assert.equal(response.json().cartChanged, false);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('photo term-only match asks stronger vision before presenting a catalog candidate', async (t) => {
+  const fixture = fixtures();
+  const visionTiers: boolean[] = [];
+  fixture.modelGateway.analyzeImage = async (input) => {
+    visionTiers.push(input.highAccuracy === true);
+    return { ok: true,
+      skus: input.highAccuracy ? ['SYN-101'] : [],
+      searchTerms: input.highAccuracy ? [] : ['Старый медный кабель'],
+      model: input.highAccuracy ? 'synthetic-deep-vision' : 'synthetic-balanced-vision',
+      usage: { inputTokens: 1, outputTokens: 1 } };
+  };
+  const app = buildApp({ catalog: fixture.catalog, catalogIndex: fixture.index,
+    modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const image = await sharp({ create: { width: 3, height: 2, channels: 3,
+    background: { r: 30, g: 80, b: 120 } } }).png().toBuffer();
+
+  const response = await uploadPhoto(app, session, image, true);
+  assert.equal(response.statusCode, 200);
+  assert.deepEqual(visionTiers, [false, true]);
+  assert.equal(response.json().photoAnalysis.escalated, true);
+  assert.equal(response.json().photoAnalysis.model, 'synthetic-deep-vision');
+  assert.deepEqual(response.json().products.map((product: Product) => product.sku), ['SYN-101']);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('photo response and model request honor the optional Kazakh locale', async (t) => {
+  const fixture = fixtures();
+  const app = buildApp({ catalog: fixture.catalog, catalogIndex: fixture.index,
+    modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const image = await sharp({ create: { width: 3, height: 2, channels: 3,
+    background: { r: 30, g: 80, b: 120 } } }).png().toBuffer();
+
+  const response = await uploadPhoto(app, session, image, true, 'kk');
+  assert.equal(response.statusCode, 200);
+  assert.equal(fixture.imageCalls[0]?.locale, 'kk');
+  assert.match(response.json().reply, /Фотодағы белгілер/);
+  assert.match(response.json().warning, /тек болжам/);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('repeated unconsented uploads hit a session limit without decoding or changing the cart', async (t) => {
+  const fixture = fixtures();
+  const app = buildApp({ catalog: fixture.catalog, modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const malformed = Buffer.from('synthetic payload that is not a PNG');
+
+  for (let attempt = 0; attempt < 8; attempt++) {
+    const response = await uploadPhoto(app, session, malformed, false);
+    assert.equal(response.statusCode, 200);
+    assert.equal(response.json().photoAnalysis.reason, 'CUSTOMER_CONSENT_REQUIRED');
+  }
+  const limited = await uploadPhoto(app, session, malformed, false);
+  assert.equal(limited.statusCode, 429);
+  assert.equal(limited.json().error.code, 'ATTACHMENT_RATE_LIMIT');
+  assert.equal(fixture.imageCalls.length, 0);
   assert.equal(await cartCount(app, session), 0);
 });

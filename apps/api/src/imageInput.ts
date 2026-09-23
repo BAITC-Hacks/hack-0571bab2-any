@@ -30,10 +30,6 @@ export type PreparedImage = {
   status: 'manual_review';
   reason: 'CUSTOMER_CONSENT_REQUIRED' | 'EXTERNAL_PROCESSING_NOT_ALLOWED';
   format: ImageFormat;
-  width: number;
-  height: number;
-  metadataRemoved: true;
-  sanitizedBytes: number;
   candidates: [];
   requiresCatalogVerification: true;
   warning: string;
@@ -86,6 +82,17 @@ function formatOf(input: ImageInput): ImageFormat {
  */
 export async function prepareCustomerImage(input: ImageInput, gate: ImageGate): Promise<PreparedImage> {
   const format = formatOf(input);
+  // No pixel work is needed when the photo cannot be sent for analysis.
+  // This also prevents repeated unconsented uploads from consuming Sharp CPU.
+  if (gate.customerConsented !== true || gate.externalProcessingAllowed !== true) {
+    return {
+      status: 'manual_review', format, candidates: [], requiresCatalogVerification: true,
+      reason: gate.customerConsented !== true ? 'CUSTOMER_CONSENT_REQUIRED' : 'EXTERNAL_PROCESSING_NOT_ALLOWED',
+      warning: gate.customerConsented !== true
+        ? 'Для анализа фотографии нужно отдельное согласие клиента. Укажите артикул или параметры товара текстом.'
+        : 'Внешний анализ фотографии пока не разрешён. Укажите артикул или параметры товара текстом.',
+    };
+  }
   let sourceWidth: number;
   let sourceHeight: number;
   try {
@@ -134,14 +141,6 @@ export async function prepareCustomerImage(input: ImageInput, gate: ImageGate): 
     sanitizedBytes: normalized.length, candidates: [] as [],
     requiresCatalogVerification: true as const,
   };
-  if (gate.customerConsented !== true) {
-    return { ...common, status: 'manual_review', reason: 'CUSTOMER_CONSENT_REQUIRED',
-      warning: 'Для анализа фотографии нужно отдельное согласие клиента. Укажите артикул или параметры товара текстом.' };
-  }
-  if (gate.externalProcessingAllowed !== true) {
-    return { ...common, status: 'manual_review', reason: 'EXTERNAL_PROCESSING_NOT_ALLOWED',
-      warning: 'Внешний анализ фотографии пока не разрешён. Укажите артикул или параметры товара текстом.' };
-  }
   return {
     ...common, status: 'ready_for_vision',
     image: { buffer: normalized, mimeType: format === 'jpeg' ? 'image/jpeg' : 'image/png' },
