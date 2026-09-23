@@ -1,0 +1,323 @@
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { buildApp } from '../src/server.js';
+import { CatalogError, createDemoCatalog, type CatalogProvider } from '../src/catalog.js';
+
+const host = 'api.test';
+const origin = `http://${host}`;
+type App = ReturnType<typeof buildApp>;
+type BrowserSession = { cookie: string; csrfToken: string };
+
+async function openSession(app: App): Promise<BrowserSession> {
+  const response = await app.inject({ method: 'GET', url: '/api/cart', headers: { host } });
+  assert.equal(response.statusCode, 200);
+  const rawCookie = response.headers['set-cookie'];
+  assert.ok(rawCookie, 'a new session must set a cookie');
+  const setCookie = Array.isArray(rawCookie) ? rawCookie[0] : String(rawCookie);
+  assert.match(setCookie, /HttpOnly/);
+  assert.match(setCookie, /SameSite=Lax/);
+  const cookie = setCookie.split(';')[0];
+  const csrfToken = response.json().csrfToken;
+  assert.equal(typeof csrfToken, 'string');
+  assert.ok(csrfToken.length > 10);
+  return { cookie, csrfToken };
+}
+
+function sessionHeaders(session: BrowserSession) {
+  return { host, origin, cookie: session.cookie, 'x-csrf-token': session.csrfToken };
+}
+
+async function chat(app: App, session: BrowserSession, message: string, locale: 'ru' | 'kk' = 'ru') {
+  return app.inject({
+    method: 'POST', url: '/api/chat', headers: sessionHeaders(session),
+    payload: { message, locale },
+  });
+}
+
+async function cart(app: App, session: BrowserSession) {
+  return app.inject({ method: 'GET', url: '/api/cart', headers: { host, cookie: session.cookie } });
+}
+
+async function confirm(app: App, session: BrowserSession, proposalId: string, idempotencyKey: string) {
+  return app.inject({
+    method: 'POST', url: '/api/cart/confirm', headers: sessionHeaders(session),
+    payload: { proposalId, idempotencyKey },
+  });
+}
+
+test('T1: product facts come from the demo catalog and missing certificate/price stay unknown', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const response = await chat(app, session, 'Есть ли артикул ABC-123?');
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(body.factsSource, 'catalog_demo');
+  assert.equal(body.cartChanged, false);
+  assert.equal(body.products.length, 1);
+  assert.equal(body.products[0].sku, 'ABC-123');
+  assert.equal(body.products[0].stock.available, 4);
+  assert.equal(body.products[0].stock.status, 'in_stock');
+  assert.equal(body.products[0].characteristics.NOMINALNYY_TOK, '10 А');
+  assert.equal(body.products[0].certificateUrl, null);
+  assert.equal(body.products[0].price, null);
+  assert.match(body.reply, /Демо-каталог/);
+  assert.match(body.reply, /ссылка на сертификат отсутствует/);
+});
+
+test('T2: unavailable product has an available, explained compatible analog', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const response = await chat(app, session, 'Нужен ABC-000');
+  assert.equal(response.statusCode, 200);
+  const body = response.json();
+  assert.equal(body.products[0].stock.available, 0);
+  assert.equal(body.products[0].stock.status, 'out_of_stock');
+  assert.equal(body.analogs.length, 1);
+  assert.equal(body.analogs[0].product.sku, 'ABC-124');
+  assert.equal(body.analogs[0].product.stock.status, 'in_stock');
+  assert.ok(body.analogs[0].matchedCharacteristics.length >= 2);
+  assert.match(body.analogs[0].reason, /совпадают/);
+});
+
+test('T3: purchase terms cite the public source and state both unknowns', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  for (const [locale, message] of [
+    ['ru', 'Какая оплата, доставка и минимальная партия?'],
+    ['kk', 'Жеткізу және төлем шарттары қандай?'],
+  ] as const) {
+    const response = await chat(app, session, message, locale);
+    assert.equal(response.statusCode, 200);
+    const body = response.json();
+    assert.equal(body.factsSource, 'partner_policy');
+    assert.equal(body.sourceUrl, 'https://ekt.kz/checkout-delivery/');
+    assert.equal(body.checkedAt, '2026-09-23');
+    assert.equal(body.cartChanged, false);
+    assert.match(body.reply, /https:\/\/ekt\.kz\/checkout-delivery\//);
+    assert.doesNotMatch(body.reply, /30\s?000|15\s?000/);
+    assert.match(body.reply, locale === 'ru' ? /Минимальная партия.*не указана/ : /Ең аз партия.*көрсетілмеген/);
+  }
+});
+
+test('T4/T5/T7: proposal leaves cart untouched; explicit confirm adds once and /cart reflects it', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const proposed = await chat(app, session, 'Добавь 2 ABC-123');
+  assert.equal(proposed.statusCode, 200);
+  const proposalBody = proposed.json();
+  assert.equal(proposalBody.cartChanged, false);
+  assert.equal(proposalBody.proposal.items[0].quantity, 2);
+  const proposalId = proposalBody.proposal.id as string;
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+
+  const first = await confirm(app, session, proposalId, 'fixed-key-001');
+  assert.equal(first.statusCode, 200);
+  assert.equal(first.json().status, 'added');
+  assert.equal(first.json().cartUrl, '/cart');
+  assert.equal(first.json().cart.itemCount, 2);
+  assert.equal(first.json().cart.items[0].quantity, 2);
+
+  const replay = await confirm(app, session, proposalId, 'fixed-key-001');
+  assert.equal(replay.statusCode, 200);
+  assert.deepEqual(replay.json(), first.json());
+  assert.equal((await cart(app, session)).json().itemCount, 2);
+
+  const page = await app.inject({ method: 'GET', url: '/cart', headers: { host, cookie: session.cookie } });
+  assert.equal(page.statusCode, 200);
+  assert.match(String(page.headers['content-type']), /text\/html/);
+  assert.match(page.body, /Демонстрационная корзина/);
+  assert.match(page.body, /ABC-123/);
+  assert.match(page.body, /Всего: 2 шт/);
+});
+
+test('T6: confirm rereads mutable stock and rejects an outdated proposal', async (t) => {
+  const base = createDemoCatalog();
+  let available = 4;
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    findBySku: (sku) => base.findBySku(sku),
+    async getById(id) {
+      const product = await base.getById(id);
+      return product && id === 'demo-1'
+        ? { ...product, stock: { available, status: available > 0 ? 'in_stock' : 'out_of_stock' } }
+        : product;
+    },
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const proposed = await chat(app, session, 'Добавь 3 ABC-123');
+  assert.equal(proposed.statusCode, 200);
+  const proposalId = proposed.json().proposal.id as string;
+  available = 2;
+
+  const response = await confirm(app, session, proposalId, 'fixed-key-002');
+  assert.equal(response.statusCode, 409);
+  assert.equal(response.json().error.code, 'INSUFFICIENT_STOCK');
+  assert.equal(response.json().error.available, 2);
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
+test('cart proposals are session-bound; missing/invalid CSRF or origin is rejected', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const first = await openSession(app);
+  const second = await openSession(app);
+  const proposed = await chat(app, first, 'Добавь 2 ABC-123');
+  const proposalId = proposed.json().proposal.id as string;
+
+  const stolen = await confirm(app, second, proposalId, 'fixed-key-003');
+  assert.equal(stolen.statusCode, 409);
+  assert.equal(stolen.json().error.code, 'PROPOSAL_NOT_FOUND');
+  assert.equal((await cart(app, second)).json().itemCount, 0);
+
+  const badToken = await app.inject({
+    method: 'POST', url: '/api/cart/confirm',
+    headers: { ...sessionHeaders(first), 'x-csrf-token': 'invalid-token' },
+    payload: { proposalId, idempotencyKey: 'fixed-key-004' },
+  });
+  assert.equal(badToken.statusCode, 403);
+  assert.equal(badToken.json().error.code, 'CSRF_INVALID');
+
+  const badOrigin = await app.inject({
+    method: 'POST', url: '/api/cart/confirm',
+    headers: { ...sessionHeaders(first), origin: 'https://another.example' },
+    payload: { proposalId, idempotencyKey: 'fixed-key-005' },
+  });
+  assert.equal(badOrigin.statusCode, 403);
+  assert.equal(badOrigin.json().error.code, 'ORIGIN_INVALID');
+  assert.equal((await cart(app, first)).json().itemCount, 0);
+});
+
+test('T8: unavailable catalog gives a safe 503 without fabricated product facts', async (t) => {
+  const catalog: CatalogProvider = {
+    source: 'catalog_live',
+    async findBySku() { throw new CatalogError('CATALOG_UNAVAILABLE'); },
+    async getById() { throw new CatalogError('CATALOG_UNAVAILABLE'); },
+    async findAnalogs() { throw new CatalogError('CATALOG_UNAVAILABLE'); },
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const response = await chat(app, session, 'Есть ли артикул ABC-123?');
+  assert.equal(response.statusCode, 503);
+  assert.equal(response.json().error.code, 'CATALOG_UNAVAILABLE');
+  assert.equal(typeof response.json().error.requestId, 'string');
+  assert.doesNotMatch(response.body, /ABC-123|В наличии|Сертификат:/);
+});
+
+test('health checks do not allocate a browser session', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+
+  const response = await app.inject({ method: 'GET', url: '/api/health', headers: { host } });
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.headers['set-cookie'], undefined);
+});
+
+test('a different product question invalidates an older cart proposal before text confirmation', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const proposed = await chat(app, session, 'Добавь 2 ABC-123');
+  assert.equal(proposed.statusCode, 200);
+  assert.ok(proposed.json().proposal?.id);
+
+  const intervening = await chat(app, session, 'Есть ли ABC-124?');
+  assert.equal(intervening.statusCode, 200);
+  assert.equal(intervening.json().products[0].sku, 'ABC-124');
+
+  const confirmation = await chat(app, session, 'Да, добавь');
+  assert.equal(confirmation.statusCode, 200);
+  assert.equal(confirmation.json().cartChanged, false);
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
+test('confirm rejects a product whose SKU or name changed after the proposal', async () => {
+  for (const changedField of ['sku', 'name'] as const) {
+    const base = createDemoCatalog();
+    let changed = false;
+    const catalog: CatalogProvider = {
+      source: 'catalog_demo',
+      findBySku: (sku) => base.findBySku(sku),
+      async getById(id) {
+        const product = await base.getById(id);
+        if (!product || !changed || id !== 'demo-1') return product;
+        return changedField === 'sku'
+          ? { ...product, sku: 'DIFFERENT-999' }
+          : { ...product, name: 'Different product' };
+      },
+      findAnalogs: (product) => base.findAnalogs(product),
+    };
+    const app = buildApp({ catalog, apiOrigin: origin });
+    try {
+      const session = await openSession(app);
+      const proposed = await chat(app, session, 'Добавь 2 ABC-123');
+      assert.equal(proposed.statusCode, 200);
+      changed = true;
+
+      const response = await confirm(app, session, proposed.json().proposal.id, `changed-${changedField}-001`);
+      assert.equal(response.statusCode, 409, `${changedField} mismatch must invalidate consent`);
+      assert.equal((await cart(app, session)).json().itemCount, 0);
+    } finally {
+      await app.close();
+    }
+  }
+});
+
+test('concurrent confirmation of one proposal with one idempotency key adds only once', async (t) => {
+  const base = createDemoCatalog();
+  let releaseRead!: () => void;
+  let signalRead!: () => void;
+  const reading = new Promise<void>((resolve) => { signalRead = resolve; });
+  const waitForRelease = new Promise<void>((resolve) => { releaseRead = resolve; });
+  let detailReads = 0;
+  const catalog: CatalogProvider = {
+    source: 'catalog_demo',
+    findBySku: (sku) => base.findBySku(sku),
+    async getById(id) {
+      detailReads++;
+      signalRead();
+      await waitForRelease;
+      return base.getById(id);
+    },
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  let confirmArrivals = 0;
+  let signalSecondArrival!: () => void;
+  const secondArrived = new Promise<void>((resolve) => { signalSecondArrival = resolve; });
+  app.addHook('onRequest', async (request) => {
+    if (request.url === '/api/cart/confirm' && ++confirmArrivals === 2) signalSecondArrival();
+  });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const proposed = await chat(app, session, 'Добавь 2 ABC-123');
+  assert.equal(proposed.statusCode, 200);
+  const proposalId = proposed.json().proposal.id as string;
+
+  const first = confirm(app, session, proposalId, 'concurrent-key-001');
+  await reading;
+  const second = confirm(app, session, proposalId, 'concurrent-key-001');
+  await secondArrived;
+  releaseRead();
+  const [firstResponse, secondResponse] = await Promise.all([first, second]);
+
+  assert.equal(firstResponse.statusCode, 200);
+  assert.equal(secondResponse.statusCode, 200);
+  assert.deepEqual(secondResponse.json(), firstResponse.json());
+  assert.equal(detailReads, 1);
+  assert.equal((await cart(app, session)).json().itemCount, 2);
+});
