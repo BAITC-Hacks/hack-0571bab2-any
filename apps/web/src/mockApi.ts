@@ -46,7 +46,7 @@ export const mockApi = {
       if (!product || product.stock.available === null || product.stock.available < 1) {
         return { ...base, reply: 'Для подготовки корзины выберите товар с подтверждённым остатком.' };
       }
-      const quantity = Number(text.match(/(\d+)\s*(?:шт\.?|штук|единиц)(?=\s|$)/i)?.[1] || 1);
+      const quantity = Number(text.match(/\b(\d+)\s*(?:шт\.?|штук|единиц)\b/i)?.[1] || 1);
       if (!Number.isSafeInteger(quantity) || quantity < 1 || quantity > 999) {
         return { ...base, reply: 'Укажите количество от 1 до 999.' };
       }
