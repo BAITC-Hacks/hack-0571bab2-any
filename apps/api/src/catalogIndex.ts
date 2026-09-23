@@ -25,6 +25,8 @@ export type CatalogIndexCoverage = Readonly<{
   duplicateIds: number;
   /** An empty page was observed; this is not proof of full coverage. */
   endObserved: boolean;
+  /** A nonempty page yielded no new valid ID; sync stopped without skipping it. */
+  stalledAtPage: number | null;
 }>;
 
 export type CatalogPageReader = (page: number) => Promise<unknown>;
@@ -36,9 +38,9 @@ export type IndexSearchOptions = {
 };
 
 export type CatalogIndexSyncOptions = {
-  /** At most this many pages in one run. Hard cap: 25. */
+  /** At most this many pages in one run. Hard cap: 100. */
   maxPages?: number;
-  /** At most this many simultaneous read-only page requests. Hard cap: 3. */
+  /** At most this many simultaneous read-only page requests. Hard cap: 2. */
   concurrency?: number;
   /** Total retained unique records. Hard cap: 200,000. */
   maxEntries?: number;
@@ -50,8 +52,8 @@ export type CatalogIndexSyncResult = Readonly<{
   entryCapReached: boolean;
 }>;
 
-const MAX_PAGES = 25;
-const MAX_CONCURRENCY = 3;
+const MAX_PAGES = 100;
+const MAX_CONCURRENCY = 2;
 const MAX_ENTRIES = 200_000;
 const MAX_ITEMS_PER_PAGE = 500;
 const MAX_QUERY_LENGTH = 200;
@@ -83,12 +85,14 @@ function normalizeRow(value: unknown): CatalogIndexRecord | null {
     ? String(row.id) : text(row.id);
   const sku = text(row.article);
   const name = text(row.name);
-  if (!id || !sku || !name) return null;
+  if (!id || !sku || !name || id.length > 64 || sku.length > 128 || name.length > 500) return null;
+  const category = text(row.category) ?? text(row.category_name);
+  if (category && category.length > 200) return null;
   return Object.freeze({
     id,
     sku,
     name,
-    category: text(row.category) ?? text(row.category_name),
+    category,
   });
 }
 
@@ -123,7 +127,8 @@ export class CatalogIndex {
   private readonly byCategory: ReadonlyMap<string, Set<string>>;
 
   constructor(records: Iterable<CatalogIndexRecord> = [], coverage: CatalogIndexCoverage = {
-    nextPage: 1, pagesRead: 0, rowsSeen: 0, invalidRows: 0, duplicateIds: 0, endObserved: false,
+    nextPage: 1, pagesRead: 0, rowsSeen: 0, invalidRows: 0, duplicateIds: 0,
+    endObserved: false, stalledAtPage: null,
   }) {
     const byId = new Map<string, CatalogIndexRecord>();
     const bySku = new Map<string, Set<string>>();
@@ -225,10 +230,11 @@ export async function ingestCatalogPages(
   let invalidRows = previous.coverage.invalidRows;
   let duplicateIds = previous.coverage.duplicateIds;
   let endObserved = false;
+  let stalledAtPage: number | null = null;
   let pagesFetched = 0;
   let entryCapReached = false;
 
-  while (pagesFetched < maxPages && !endObserved && !entryCapReached) {
+  while (pagesFetched < maxPages && !endObserved && !entryCapReached && stalledAtPage === null) {
     const batchSize = Math.min(concurrency, maxPages - pagesFetched);
     const pageNumbers = Array.from({ length: batchSize }, (_, index) => nextPage + index);
     const rawPages = await Promise.all(pageNumbers.map(readPage));
@@ -245,6 +251,10 @@ export async function ingestCatalogPages(
         if (byId.has(record.id) || additions.has(record.id)) { pageDuplicate++; continue; }
         additions.set(record.id, record);
       }
+      if (!empty && additions.size === 0) {
+        stalledAtPage = pageNumber;
+        break; // Repeated/invalid page: do not claim an end or skip this cursor.
+      }
       if (byId.size + additions.size > maxEntries) {
         entryCapReached = true;
         break; // Retry this whole page with a higher cap; never skip its rows.
@@ -260,7 +270,7 @@ export async function ingestCatalogPages(
   }
 
   const coverage: CatalogIndexCoverage = {
-    nextPage, pagesRead, rowsSeen, invalidRows, duplicateIds, endObserved,
+    nextPage, pagesRead, rowsSeen, invalidRows, duplicateIds, endObserved, stalledAtPage,
   };
   return { index: new CatalogIndex(byId.values(), coverage), pagesFetched, entryCapReached };
 }

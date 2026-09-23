@@ -15,7 +15,8 @@
   "dependencies": {
     "@fastify/multipart": "^10.1.2",
     "dotenv": "^18.0.3",
-    "fastify": "5.12.5"
+    "fastify": "5.12.5",
+    "sharp": "^0.35.4"
   },
   "devDependencies": {
     "@types/node": "26.6.2",

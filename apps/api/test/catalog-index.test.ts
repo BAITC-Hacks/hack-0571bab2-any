@@ -76,6 +76,28 @@ test('short intermediate page does not hide products on later pages', async () =
   assert.equal(result.index.coverage.endObserved, true);
 });
 
+test('echoed page number with repeated earlier items stalls rather than certifying the catalog end', async () => {
+  const readPage = async (page: number) => ({
+    page, per_page: 2, count: 100,
+    items: page === 1 ? [{ id: 1, article: 'A-1', name: 'One' }, { id: 2, article: 'A-2', name: 'Two' }]
+      : page === 2 ? [{ id: 3, article: 'A-3', name: 'Three' }]
+        : [{ id: 1, article: 'A-1', name: 'One' }, { id: 2, article: 'A-2', name: 'Two' }],
+  });
+  const stopped = await ingestCatalogPages(new CatalogIndex(), readPage, { maxPages: 4 });
+  assert.equal(stopped.index.size, 3);
+  assert.equal(stopped.index.coverage.endObserved, false);
+  assert.equal(stopped.index.coverage.stalledAtPage, 3);
+  assert.equal(stopped.index.coverage.nextPage, 3, 'repeated page remains the resume cursor');
+
+  const resumed = await ingestCatalogPages(stopped.index, async (page) => ({
+    page, per_page: 2, count: 4,
+    items: page === 3 ? [{ id: 4, article: 'A-4', name: 'Four' }] : [],
+  }), { maxPages: 2 });
+  assert.equal(resumed.index.size, 4);
+  assert.equal(resumed.index.coverage.stalledAtPage, null);
+  assert.equal(resumed.index.coverage.endObserved, true);
+});
+
 test('confirmed list shape without category supports name/SKU lookup but no category facet', async () => {
   const result = await ingestCatalogPages(new CatalogIndex(), async (page) => ({
     page, per_page: 20, count: 1,
@@ -108,7 +130,7 @@ test('rejects pagination shape drift and overlarge unbounded requests', async ()
     page: 9, per_page: 1, count: 1, items: [],
   })), /CATALOG_INDEX_INVALID_PAGE/);
   await assert.rejects(ingestCatalogPages(new CatalogIndex(), async () => syntheticPage(1, 1, 1), {
-    maxPages: 26,
+    maxPages: 101,
   }), /CATALOG_INDEX_INVALID_OPTION/);
   assert.throws(() => new CatalogIndex().search('a'.repeat(201)), /CATALOG_INDEX_QUERY_TOO_LONG/);
 });

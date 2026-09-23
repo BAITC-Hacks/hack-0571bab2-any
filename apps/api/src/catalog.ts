@@ -1,4 +1,5 @@
 /** Catalog facts are read on the server; this module never writes to ekt.kz. */
+import type { CatalogIndex } from './catalogIndex.js';
 export type CatalogSource = 'catalog_live' | 'catalog_demo';
 
 export type Product = {
@@ -238,6 +239,7 @@ export function createLiveCatalog(config: {
   baseUrl: string;
   username: string;
   password: string;
+  index?: CatalogIndex;
 }): CatalogProvider {
   let baseUrl: URL;
   try {
@@ -327,6 +329,12 @@ export function createLiveCatalog(config: {
       const sought = normalized(sku);
       if (!sought) return null;
       const deadline = Date.now() + SEARCH_BUDGET_MS;
+      // The snapshot is only a locator. Product facts always come from fresh
+      // detail, and a stale/missing index entry falls through to bounded search.
+      for (const candidate of config.index?.findExactSku(sku).slice(0, 4) ?? []) {
+        const product = await getById(candidate.id, deadline);
+        if (product && normalized(product.sku) === sought) return product;
+      }
       for (let page = 1; page <= MAX_SEARCH_PAGES; page++) {
         const result = await listPage(page, deadline);
         const item = result.items.find((candidate) => {
@@ -352,13 +360,35 @@ export function createLiveCatalog(config: {
       const deadline = Date.now() + SEARCH_BUDGET_MS;
       const analogs: Analog[] = [];
       let detailsRead = 0;
+      const inspected = new Set<string>();
+      const categoryQuery = (product.category.match(/[\p{L}\p{N}]+/gu) ?? []).slice(0, 12).join(' ').slice(0, 200);
+      if (config.index?.size && categoryQuery) {
+        // Category words are candidate hints, not proof of compatibility.
+        // compatibleAnalog requires the current detail's category and four
+        // safety-critical properties to match before presenting any analog.
+        const indexed = config.index.search(categoryQuery, { match: 'any', limit: 20 });
+        for (const item of indexed) {
+          // Reserve half the detail budget for the legacy first-page fallback:
+          // the optional snapshot can be partial or have no category facet.
+          if (detailsRead >= Math.floor(MAX_ANALOG_DETAILS / 2) || analogs.length >= MAX_ANALOG_RESULTS) break;
+          if (item.id === product.id || !/^\d+$/.test(item.id)) continue;
+          inspected.add(item.id);
+          detailsRead++;
+          const candidate = await getById(item.id, deadline);
+          if (!candidate) continue;
+          const analog = compatibleAnalog(product, candidate);
+          if (analog) analogs.push(analog);
+        }
+        if (analogs.length) return analogs;
+      }
       for (let page = 1; page <= MAX_ANALOG_PAGES; page++) {
         const result = await listPage(page, deadline);
         for (const item of result.items) {
           if (detailsRead >= MAX_ANALOG_DETAILS || analogs.length >= MAX_ANALOG_RESULTS) return analogs;
           const id = typeof item.id === 'number' && Number.isSafeInteger(item.id)
             ? String(item.id) : nonemptyString(item.id);
-          if (!id || id === product.id || !/^\d+$/.test(id)) continue;
+          if (!id || id === product.id || inspected.has(id) || !/^\d+$/.test(id)) continue;
+          inspected.add(id);
           detailsRead++;
           const candidate = await getById(id, deadline);
           if (!candidate) continue;

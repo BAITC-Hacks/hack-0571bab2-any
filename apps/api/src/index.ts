@@ -1,5 +1,6 @@
 import { config } from 'dotenv';
 import { buildApp } from './server.js';
+import { loadCatalogSnapshot } from './catalogSnapshot.js';
 
 config({ quiet: true });
 
@@ -8,7 +9,15 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) {
   throw new Error('PORT must be a valid TCP port');
 }
 
-const app = buildApp();
+let catalogIndex;
+if (process.env.CATALOG_MODE === 'live') {
+  try {
+    catalogIndex = await loadCatalogSnapshot();
+  } catch {
+    console.error('Local catalog index unavailable; using bounded live lookup');
+  }
+}
+const app = buildApp({ catalogIndex });
 try {
   await app.listen({ host: '127.0.0.1', port });
   console.log('HackAlem API listening on port ' + port);

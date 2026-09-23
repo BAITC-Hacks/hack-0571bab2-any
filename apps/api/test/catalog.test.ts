@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
 import test, { type TestContext } from 'node:test';
 import { CatalogError, createLiveCatalog } from '../src/catalog.js';
+import { CatalogIndex } from '../src/catalogIndex.js';
 
 type RequestRecord = { method: string | undefined; url: string | undefined; authorization: string | undefined };
 
@@ -163,4 +164,46 @@ test('live adapter rejects unrelated hosts, HTTP for ekt.kz, and URL credentials
       return true;
     });
   }
+});
+
+test('indexed article on a distant page uses one fresh detail read, not a five-page guess', async (t) => {
+  const requests: string[] = [];
+  const baseUrl = await localCatalog(t, (request, response) => {
+    requests.push(request.url ?? '');
+    if (request.url === '/api/products/detail?id=9999') {
+      json(response, { ...detail, id: 9999, article: 'FAR-9999', name: 'Текущее название', quantity: 2 });
+    } else json(response, { error: 'unexpected path' }, 404);
+  });
+  const index = new CatalogIndex([{ id: '9999', sku: 'FAR-9999', name: 'Старое название', category: null }]);
+  const catalog = createLiveCatalog({ baseUrl, username: 'synthetic-user', password: 'synthetic-password', index });
+  const product = await catalog.findBySku('FAR-9999');
+  assert.equal(product?.name, 'Текущее название');
+  assert.equal(product?.stock.available, 2);
+  assert.deepEqual(requests, ['/api/products/detail?id=9999']);
+});
+
+test('partial index with no compatible analog falls back to bounded live pages', async (t) => {
+  const requests: string[] = [];
+  const source = { ...detail, category: 'Автоматический выключатель' };
+  const baseUrl = await localCatalog(t, (request, response) => {
+    requests.push(request.url ?? '');
+    if (request.url === '/api/products/detail?id=88') {
+      json(response, { ...source, id: 88, article: 'WRONG-88', category: 'Розетка', quantity: 5 });
+    } else if (request.url === '/api/products?page=1') {
+      json(response, { page: 1, per_page: 20, count: 2, items: [
+        { id: 17, article: 'ABC-123' }, { id: 18, article: 'ABC-124' },
+      ] });
+    } else if (request.url === '/api/products/detail?id=18') {
+      json(response, { ...source, id: 18, article: 'ABC-124', quantity: 3 });
+    } else json(response, { error: 'unexpected path' }, 404);
+  });
+  const index = new CatalogIndex([{ id: '88', sku: 'WRONG-88', name: 'Автоматический выключатель', category: null }]);
+  const catalog = createLiveCatalog({ baseUrl, username: 'synthetic-user', password: 'synthetic-password', index });
+  const analogs = await catalog.findAnalogs({ ...source,
+    id: '17', sku: 'ABC-123', stock: { available: 0, status: 'out_of_stock' },
+    characteristics: Object.fromEntries(Object.entries(source.properties).map(([key, value]) => [key, String(value)])),
+    source: 'catalog_live', certificateUrl: null, price: null });
+  assert.equal(analogs.length, 1);
+  assert.equal(analogs[0]?.product.sku, 'ABC-124');
+  assert.deepEqual(requests, ['/api/products/detail?id=88', '/api/products?page=1', '/api/products/detail?id=18']);
 });
