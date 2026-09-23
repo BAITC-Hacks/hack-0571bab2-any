@@ -1,0 +1,983 @@
+import Fastify from 'fastify';
+import multipart from '@fastify/multipart';
+import { randomBytes, randomUUID, timingSafeEqual } from 'node:crypto';
+import { AttachmentError, extractAttachmentCandidates, MAX_ATTACHMENT_BYTES } from './attachments.js';
+import { boundedRoutingContext, routeUserRequest } from './aiRouting.js';
+import type { CatalogIndex } from './catalogIndex.js';
+import { ImageInputError, prepareCustomerImage } from './imageInput.js';
+import { DocumentExtractionError, extractDocumentCandidates } from './documentExtraction.js';
+import { createModelGateway, type ModelGateway } from './modelGateway.js';
+import { answerPurchaseTerms, detectsPurchaseTerms } from './policy.js';
+import {
+  createDemoCatalog,
+  createLiveCatalog,
+  CatalogError,
+  type Analog,
+  type CatalogProvider,
+  type Product,
+} from './catalog.js';
+
+type CartItem = {
+  productId: string;
+  sku: string;
+  name: string;
+  quantity: number;
+  availableAtConfirmation: number | null;
+};
+type ProposalItem = { productId: string; sku: string; name: string; quantity: number };
+type Proposal = { id: string; items: ProposalItem[]; expiresAt: number; used: boolean };
+type Confirmation = { proposalId: string; result: { cart: ReturnType<typeof cartSnapshot>; cartUrl: '/cart'; status: 'added'; requestId: string } };
+type Session = {
+  csrfToken: string;
+  expiresAt: number;
+  items: CartItem[];
+  proposal: Proposal | null;
+  lastProductId: string | null;
+  modelCallsUsed: number;
+  recentProductIds: string[];
+  recentCategories: string[];
+  attachmentWindow: { startedAt: number; count: number };
+  confirmations: Map<string, Confirmation>;
+  lock: Promise<void>;
+};
+
+const SESSION_MS = 4 * 60 * 60 * 1000;
+const PROPOSAL_MS = 10 * 60 * 1000;
+const CART_URL = '/cart' as const;
+const MAX_SESSIONS = 5000;
+const SESSION_CREATION_WINDOW_MS = 60_000;
+const MAX_SESSIONS_PER_IP_PER_WINDOW = 120;
+const MAX_SESSION_CREATIONS_PER_WINDOW = 300;
+const MAX_SESSION_CREATION_IPS = 4096;
+const MAX_CONCURRENT_LIVE_CATALOG_OPS = 8;
+const MAX_LIVE_CATALOG_OPS_PER_WINDOW = 60;
+const MAX_ATTACHMENTS_PER_SESSION_PER_WINDOW = 8;
+const MAX_ATTACHMENTS_PER_PROCESS_PER_WINDOW = 120;
+const MAX_SEARCH_PRODUCTS = 4;
+const SEARCH_WORDS: Record<string, string> = {
+  cable: 'кабель', breaker: 'автомат', socket: 'розетка',
+  lighting: 'светильник', switch: 'выключатель',
+};
+const SEARCH_STOP_WORDS = new Set(['мне', 'нужен', 'нужна', 'нужны', 'хочу', 'для', 'дома', 'дом', 'квартиры',
+  'подскажите', 'помогите', 'есть', 'ли', 'какой', 'какая', 'какие', 'подберите', 'полностью', 'собери', 'электрику',
+  'и', 'или', 'на', 'в', 'по', 'из', 'этого', 'мне', 'сразу', 'несколько']);
+
+const KAZAKH_ATTACHMENT_ERRORS: Record<string, string> = {
+  INVALID_INPUT: 'Файлды file өрісінде жіберіңіз.',
+  UNSUPPORTED_FILE: 'Файл пішімі қолдау таппайды немесе мазмұнына сәйкес келмейді.',
+  EMPTY_FILE: 'Файл бос немесе жіберілмеген.',
+  FILE_TOO_LARGE: 'Файл көлемі 2 МБ шегінен асады.',
+  INVALID_FILENAME: 'Файл атауы жарамсыз.',
+  INVALID_DOCUMENT: 'Құжат бүлінген немесе оның мазмұны қолдау таппайды.',
+  DOCUMENT_TOO_COMPLEX: 'Құжат беттер, жолдар немесе ашылған дерек көлемі бойынша шектен асады.',
+  EMPTY_IMAGE: 'Фото жіберілмеген немесе файл бос.',
+  IMAGE_TOO_LARGE: 'Фото көлемі немесе ажыратымдылығы шектен асады.',
+  INVALID_IMAGE_NAME: 'Фото атауы жарамсыз.',
+  INVALID_IMAGE: 'Фото бүлінген немесе жарамсыз.',
+  UNSUPPORTED_IMAGE: 'Тек JPEG және PNG фотолары қолдау табады.',
+  ATTACHMENT_RATE_LIMIT: 'Жүктеу шегіне жеттіңіз. Бір минуттан кейін қайталаңыз.',
+  ATTACHMENT_BUSY: 'Файлдарды өңдеу бос емес. Кейінірек қайталаңыз.',
+  DOCUMENT_BUSY: 'Құжаттарды өңдеу бос емес. Кейінірек қайталаңыз.',
+  IMAGE_BUSY: 'Фотоларды өңдеу бос емес. Кейінірек қайталаңыз.',
+  PAYLOAD_TOO_LARGE: 'Файл көлемі рұқсат етілген шектен асады.',
+};
+
+const KAZAKH_API_ERRORS: Record<string, string> = {
+  SESSION_REQUIRED: 'Себетті ашып, әрекетті қайталаңыз.',
+  ORIGIN_INVALID: 'Сұрау жіберілген сайтқа рұқсат жоқ.',
+  CSRF_INVALID: 'Бетті жаңартып, әрекетті қайталаңыз.',
+  CATALOG_BUSY: 'Каталог қазір бос емес. Кейінірек қайталаңыз.',
+  CATALOG_UNAUTHORIZED: 'Каталогқа қолжетімділік жоқ.',
+  CATALOG_RATE_LIMITED: 'Каталог сұраулар санын уақытша шектеді.',
+  CATALOG_TIMEOUT: 'Каталог уақытында жауап бермеді.',
+  CATALOG_UNAVAILABLE: 'Каталог уақытша қолжетімсіз.',
+  CATALOG_INVALID_RESPONSE: 'Каталог күтпеген дерек қайтарды.',
+  CATALOG_SEARCH_INCOMPLETE: 'Каталогтан іздеу аяқталмады; тауардың бар екені расталмады.',
+  SERVICE_UNAVAILABLE: 'Қызмет уақытша қолжетімсіз. Кейінірек қайталаңыз.',
+  INVALID_INPUT: 'Сұрауды тексеріңіз.',
+  INVALID_QUANTITY: '1-ден 1000-ға дейінгі санды көрсетіңіз.',
+  IDEMPOTENCY_CONFLICT: 'Бұл әрекет кілті бұрын қолданылған.',
+  PROPOSAL_NOT_FOUND: 'Осы сессияда расталатын ұсыныс табылмады.',
+  PROPOSAL_ALREADY_USED: 'Ұсыныс бұрын расталған.',
+  PROPOSAL_EXPIRED: 'Ұсыныстың мерзімі аяқталды.',
+  STOCK_UNAVAILABLE: 'Тауардың қолда бары қазір расталмады.',
+  PRODUCT_CHANGED: 'Тауар деректері өзгерді. Жаңа ұсыныс сұраңыз.',
+  INSUFFICIENT_STOCK: 'Қоймадағы саны жеткіліксіз. Қайта растау қажет.',
+};
+
+class ApiFailure extends Error {
+  constructor(
+    readonly statusCode: number,
+    readonly code: string,
+    message: string,
+    readonly available?: number,
+  ) { super(message); }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function safeEqual(a: string, b: string): boolean {
+  const left = Buffer.from(a);
+  const right = Buffer.from(b);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+function cookieValue(request: { headers: { cookie?: string } }, name: string): string | null {
+  const raw = request.headers.cookie;
+  if (!raw) return null;
+  for (const part of raw.split(';')) {
+    const [key, ...value] = part.trim().split('=');
+    if (key === name) return value.join('=');
+  }
+  return null;
+}
+
+function cartSnapshot(session: Session) {
+  const items = session.items.map((item) => ({ ...item }));
+  return { items, itemCount: items.reduce((sum, item) => sum + item.quantity, 0) };
+}
+
+function rememberProducts(session: Session, products: readonly Product[]): void {
+  for (const product of products) {
+    session.recentProductIds = [...session.recentProductIds.filter((id) => id !== product.id), product.id].slice(-6);
+    if (product.category) {
+      session.recentCategories = [...session.recentCategories.filter((name) => name !== product.category),
+        product.category].slice(-6);
+    }
+  }
+}
+
+function extractSku(message: string): string | null {
+  const labelled = message.match(/артикул(?:ом|а|у)?\s*[:№#]?\s*([A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9./_-]{2,})/iu);
+  if (labelled) return labelled[1].toUpperCase();
+  const candidates = message.match(/[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+(?:[-/][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+)+/giu) || [];
+  const compound = candidates.find((candidate) => /\d/.test(candidate));
+  if (compound) return compound.toUpperCase();
+  return message.match(/[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ]{2,}\d{2,}/iu)?.[0].toUpperCase() || null;
+}
+
+function extractAllSkus(message: string): string[] {
+  const matches = message.match(/[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+(?:[-/][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+)+|[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ]{2,}\d{2,}/giu) ?? [];
+  return [...new Set(matches.filter((value) => /\d/u.test(value)).map((value) => value.toUpperCase()))].slice(0, 4);
+}
+
+function searchTerms(message: string): string {
+  return (message.normalize('NFKC').toLocaleLowerCase('ru').match(/[\p{L}\p{N}]+/gu) ?? [])
+    .filter((word) => word.length > 2 && !SEARCH_STOP_WORDS.has(word)).slice(0, 6).join(' ');
+}
+
+function isAddIntent(message: string): boolean {
+  if (/(?:^|[\s,.!?])не\s+(?:(?:надо|нужно)\s+)?(?:добав|полож|клади|в\s+корзин)|(?:^|[\s,.!?])қоспа/iu.test(message)) return false;
+  return /(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|в\s+корзин|add\s+to\s+cart|себетке(?:\s+(?:\d+|бір|екі|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он)(?:\s*дана)?)?\s+қос)/iu.test(message);
+}
+
+function isProductFollowup(message: string): boolean {
+  return /остат(?:ок|ки)|наличи|характеристик|параметр|сертификат|цен[аеуы]|сколько(?:\s+\p{L}+){0,2}\s+стоит|аналог|замен[ау]|қалдық|сипаттам|баға|қанша\s+тұр|балама/iu.test(message);
+}
+
+function isExplicitConfirmation(message: string): boolean {
+  return /^\s*(?:да[,\s]+добавь|да[,\s]+подтверждаю|подтверждаю|согласен[,\s]+добавь|иә[,\s]+қос)\s*[.!]?\s*$/iu.test(message);
+}
+
+const QUANTITY_WORDS: Record<string, number> = {
+  один: 1, одну: 1, одна: 1, два: 2, две: 2, три: 3, четыре: 4, пять: 5,
+  шесть: 6, семь: 7, восемь: 8, девять: 9, десять: 10,
+  бір: 1, екі: 2, үш: 3, төрт: 4, бес: 5, алты: 6, жеті: 7, сегіз: 8, тоғыз: 9, он: 10,
+};
+const QUANTITY_TOKEN = '-?\\d+(?:[.,]\\d+)?|один|одну|одна|два|две|три|четыре|пять|шесть|семь|восемь|девять|десять|бір|екі|үш|төрт|бес|алты|жеті|сегіз|тоғыз|он|полтора|пару|несколько';
+const QUANTITY_BEFORE = new RegExp(`(?:^|\\s)(${QUANTITY_TOKEN})\\s*(?:шт\\.?|штук|штуки|дана|pcs)?\\s*$`, 'iu');
+const QUANTITY_AFTER = new RegExp(`^\\s*(${QUANTITY_TOKEN})\\s*(?:шт\\.?|штук|штуки|дана|pcs)(?:[\\s,;:]|$)`, 'iu');
+const KK_QUANTITY_BEFORE = new RegExp(`(?:^|\\s)(${QUANTITY_TOKEN})\\s*(?:дана\\s*)?қос\\s*$`, 'iu');
+const KK_QUANTITY_AFTER = new RegExp(`^\\s*[,;:]?\\s*себетке\\s+(${QUANTITY_TOKEN})\\s*(?:дана\\s*)?қос`, 'iu');
+const SKU_MENTION_PATTERN = /[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+(?:[-/][A-ZА-ЯЁӘҒҚҢӨҰҮҺІ0-9]+)+|[A-ZА-ЯЁӘҒҚҢӨҰҮҺІ]{2,}\d{2,}/giu;
+
+function quantityValue(token: string): number {
+  return QUANTITY_WORDS[token.toLocaleLowerCase('ru')] ?? Number(token.replace(',', '.'));
+}
+
+function quantityNearSku(before: string, after: string): number {
+  // The browser labels reviewed SKUs explicitly: "2 шт. артикул ABC-123".
+  // Remove only that label, preserving list separators so the next item's
+  // quantity is never mistaken for a trailing quantity of the previous SKU.
+  const beforeSku = before.replace(/(?:^|\s)(?:артикул|арт\.?)\s*:?\s*$/iu, ' ');
+  const leading = beforeSku.match(QUANTITY_BEFORE)?.[1] || beforeSku.match(KK_QUANTITY_BEFORE)?.[1];
+  const trailing = after.match(QUANTITY_AFTER)?.[1] || after.match(KK_QUANTITY_AFTER)?.[1];
+  if (leading && trailing) return Number.NaN;
+  if (leading || trailing) return quantityValue((leading || trailing)!);
+  // A vague quantity immediately before a SKU must not silently become one.
+  if (/(?:^|\s)(?:полтора|пару|несколько|двадцать|тридцать)\s*$/iu.test(beforeSku)) return Number.NaN;
+  return 1;
+}
+
+function requestedItems(message: string): { sku: string; quantity: number }[] {
+  const matches = [...message.matchAll(SKU_MENTION_PATTERN)];
+  if (matches.length > 4) return [{ sku: '', quantity: Number.NaN }];
+  if (!matches.length) {
+    const direct = message.match(/(?:добав(?:ь|ить|ьте)|полож(?:и|ить)|қос|себетке)\s+(-?\d+(?:[.,]\d+)?|[\p{L}]+)(?:\s*(?:шт\.?|штук|штуки|дана|pcs))?(?:\s+қос)?\s*$/iu)?.[1];
+    return [{ sku: '', quantity: direct ? quantityValue(direct) : 1 }];
+  }
+  const seen = new Set<string>();
+  return matches.map((match, index) => {
+    const sku = match[0].toUpperCase();
+    const before = message.slice(index ? matches[index - 1]!.index! + matches[index - 1]![0].length : 0, match.index!);
+    const after = message.slice(match.index! + match[0].length, matches[index + 1]?.index);
+    const quantity = seen.has(sku) ? Number.NaN : quantityNearSku(before, after);
+    seen.add(sku);
+    return { sku, quantity };
+  });
+}
+
+const KK_CHARACTERISTIC_LABELS: Record<string, string> = {
+  NOMINALNOE_NAPRYAZHENIE: 'Номиналды кернеу',
+  NOMINALNYY_TOK: 'Номиналды ток',
+  KOLICHESTVO_POLYUSOV: 'Полюстер саны',
+  TIP_USTANOVKI: 'Орнату түрі',
+  СЕЧЕНИЕ: 'Қима',
+  МАТЕРИАЛ: 'Материал',
+  МОЩНОСТЬ: 'Қуат',
+  КЛАВИШИ: 'Пернелер саны',
+};
+
+const KK_MATCHED_LABELS: Record<string, string> = {
+  'Номинальное напряжение': 'Номиналды кернеу',
+  'Номинальный ток': 'Номиналды ток',
+  'Количество полюсов': 'Полюстер саны',
+  'Тип установки': 'Орнату түрі',
+};
+
+function localizeAnalog(analog: Analog, locale: 'ru' | 'kk'): Analog {
+  if (locale === 'ru') return analog;
+  const generatedReason = `Та же категория; совпадают ${analog.matchedCharacteristics.join(', ')}. Товар в наличии; остальные параметры проверьте перед покупкой.`;
+  if (analog.reason !== generatedReason) return analog;
+  const matchedCharacteristics = analog.matchedCharacteristics.map((text) => {
+    const separator = text.indexOf(':');
+    if (separator < 0) return text;
+    const label = text.slice(0, separator);
+    return (KK_MATCHED_LABELS[label] || label) + text.slice(separator);
+  });
+  const matched = matchedCharacteristics.length
+    ? 'тексерілген маңызды сипаттамалары сәйкес: ' + matchedCharacteristics.join(', ') + '. '
+    : '';
+  return {
+    ...analog,
+    matchedCharacteristics,
+    reason: 'Санаты бірдей; ' + matched + 'Тауар қоймада бар; қалған параметрлерін сатып алудан бұрын тексеріңіз.',
+  };
+}
+
+function productReply(product: Product, analogs: Analog[], locale: 'ru' | 'kk'): string {
+  const kk = locale === 'kk';
+  const demo = product.source === 'catalog_demo' ? (kk ? 'Демо каталог деректері. ' : 'Демо-каталог. ') : '';
+  const availability = product.stock.available === null
+    ? (kk ? 'Қоймадағы қалдық расталмаған.' : 'Остаток не подтверждён.')
+    : product.stock.available === 0
+      ? (kk ? 'Қоймада жоқ.' : 'Нет в наличии.')
+      : (kk ? 'Қоймада: ' + product.stock.available + ' дана.' : 'В наличии: ' + product.stock.available + ' шт.');
+  const properties = Object.entries(product.characteristics).slice(0, 5)
+    .map(([key, value]) => (kk ? KK_CHARACTERISTIC_LABELS[key] || key : key) + ': ' + value).join('; ');
+  const certificate = product.certificateUrl
+    ? 'Сертификат: ' + product.certificateUrl
+    : (kk ? 'Сертификатқа расталған сілтеме жоқ.' : 'Подтверждённая ссылка на сертификат отсутствует.');
+  const price = product.price
+    ? (kk ? ' Баға: ' : ' Цена: ') + product.price.amount + ' ' + product.price.currency + '.'
+    : (kk ? ' Баға расталмаған.' : ' Цена не подтверждена.');
+  const alternative = analogs.length
+    ? (kk ? ' Тексерілген сипаттамалары бойынша ықтимал балама: ' : ' Возможный аналог по проверенным характеристикам: ') +
+      analogs.map((entry) => entry.product.sku + ' — ' + entry.reason.replace(/[.!?]+$/u, '')).join('; ') + '.'
+    : product.stock.status === 'out_of_stock'
+      ? product.source === 'catalog_live'
+        ? (kk ? ' Каталогтың тексерілген бөлігінде балама табылмады; менеджерден нақтылаңыз.' : ' В проверенной части каталога аналог не найден; уточните у менеджера.')
+        : (kk ? ' Демо каталогта балама табылмады.' : ' В демонстрационном каталоге аналог не найден.')
+      : '';
+  return demo + product.name + ' (' + product.sku + '). ' + availability +
+    (properties ? (kk ? ' Сипаттамалары: ' : ' Характеристики: ') + properties + '.' : '') + ' ' + certificate + price + alternative;
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/[&<>"']/g, (character) => ({
+    '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+  })[character] || character);
+}
+
+async function locked<T>(session: Session, action: () => Promise<T>): Promise<T> {
+  const previous = session.lock;
+  let unlock = () => {};
+  session.lock = new Promise<void>((resolve) => { unlock = resolve; });
+  await previous;
+  try { return await action(); } finally { unlock(); }
+}
+
+export function buildApp(options: {
+  catalog?: CatalogProvider;
+  catalogIndex?: CatalogIndex;
+  modelGateway?: ModelGateway;
+  now?: () => number;
+  webOrigin?: string;
+  apiOrigin?: string;
+} = {}) {
+  const mode = process.env.CATALOG_MODE || 'demo';
+  if (mode !== 'demo' && mode !== 'live') throw new Error('CATALOG_MODE must be demo or live');
+  const upstreamCatalog = options.catalog || (mode === 'live'
+    ? createLiveCatalog({
+      baseUrl: process.env.EKT_API_BASE_URL || '',
+      username: process.env.EKT_API_USERNAME || '',
+      password: process.env.EKT_API_PASSWORD || '',
+      index: options.catalogIndex,
+    })
+    : createDemoCatalog());
+  const now = options.now || Date.now;
+  const externalProcessingAllowed = process.env.EXTERNAL_AI_ALLOWED === 'true' &&
+    process.env.AI_PROVIDER === 'openai' && Boolean(process.env.OPENAI_API_KEY);
+  const modelGateway = options.modelGateway ?? createModelGateway({
+    apiKey: externalProcessingAllowed ? process.env.OPENAI_API_KEY : undefined,
+  });
+  const sessions = new Map<string, Session>();
+  const sessionCreationByIp = new Map<string, { startedAt: number; count: number }>();
+  let sessionCreationWindow = { startedAt: now(), count: 0 };
+  let activeLiveCatalogOps = 0;
+  let activeImageJobs = 0;
+  let activeDocumentJobs = 0;
+  let activeAttachmentJobs = 0;
+  let attachmentWindow = { startedAt: now(), count: 0 };
+  let liveCatalogWindow = { startedAt: now(), count: 0 };
+  async function withCatalogBudget<T>(action: () => Promise<T>): Promise<T> {
+    if (upstreamCatalog.source !== 'catalog_live') return action();
+    const time = now();
+    if (time - liveCatalogWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+      liveCatalogWindow = { startedAt: time, count: 0 };
+    }
+    if (activeLiveCatalogOps >= MAX_CONCURRENT_LIVE_CATALOG_OPS ||
+      liveCatalogWindow.count >= MAX_LIVE_CATALOG_OPS_PER_WINDOW) {
+      throw new ApiFailure(429, 'CATALOG_BUSY', 'Каталог занят. Повторите запрос позже.');
+    }
+    liveCatalogWindow.count++;
+    activeLiveCatalogOps++;
+    try { return await action(); } finally { activeLiveCatalogOps--; }
+  }
+  const catalog: CatalogProvider = {
+    source: upstreamCatalog.source,
+    findBySku: (sku) => withCatalogBudget(() => upstreamCatalog.findBySku(sku)),
+    getById: (id) => withCatalogBudget(() => upstreamCatalog.getById(id)),
+    findAnalogs: (product) => withCatalogBudget(() => upstreamCatalog.findAnalogs(product)),
+  };
+  async function indexedProducts(message: string, categories: readonly string[], project: boolean): Promise<Product[]> {
+    const index = options.catalogIndex;
+    if (!index?.size) return [];
+    const ids = new Set<string>();
+    const skuById = new Map<string, string>();
+    for (const sku of extractAllSkus(message)) {
+      for (const row of index.findExactSku(sku)) {
+        ids.add(row.id);
+        skuById.set(row.id, sku);
+      }
+    }
+    const categoryWords = project && categories.length === 0
+      ? ['автомат', 'кабель', 'розетка', 'светильник']
+      : categories.map((category) => SEARCH_WORDS[category]).filter((word): word is string => Boolean(word));
+    const categoryMatches = categoryWords.map((word) => {
+      const rows = index.search(word, { match: 'any', limit: MAX_SEARCH_PRODUCTS });
+      return rows.length || word !== 'автомат' ? rows
+        : index.search('автоматический', { match: 'any', limit: MAX_SEARCH_PRODUCTS });
+    });
+    // Cover each requested category before spending remaining slots on
+    // multiple products from the same category.
+    for (const rows of categoryMatches) {
+      if (ids.size >= MAX_SEARCH_PRODUCTS) break;
+      const first = rows.find((row) => !ids.has(row.id));
+      if (first) ids.add(first.id);
+    }
+    for (const rows of categoryMatches) {
+      for (const row of rows) {
+        if (ids.size >= MAX_SEARCH_PRODUCTS) break;
+        ids.add(row.id);
+      }
+    }
+    if (ids.size === 0) {
+      const query = searchTerms(message).slice(0, 200);
+      if (query) {
+        let rows = index.search(query, { limit: MAX_SEARCH_PRODUCTS });
+        if (!rows.length) rows = index.search(query, { match: 'any', limit: MAX_SEARCH_PRODUCTS });
+        for (const row of rows) ids.add(row.id);
+      }
+    }
+    const selected = [...ids].slice(0, MAX_SEARCH_PRODUCTS);
+    const settled = await Promise.allSettled(selected.map((id) => catalog.getById(id)));
+    const products = settled.flatMap((result, position) => {
+      const expectedSku = skuById.get(selected[position]!);
+      return result.status === 'fulfilled' && result.value &&
+        (!expectedSku || result.value.sku.toLocaleUpperCase('ru') === expectedSku.toLocaleUpperCase('ru'))
+        ? [result.value] : [];
+    });
+    if (!products.length) {
+      const failed = settled.find((result) => result.status === 'rejected');
+      if (failed?.status === 'rejected') throw failed.reason;
+    }
+    return products;
+  }
+  const sessionFor = new WeakMap<object, Session>();
+  const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 10_000, genReqId: () => randomUUID() });
+  app.register(multipart, { limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1, fields: 0, parts: 1 } });
+
+  app.addHook('onRequest', async (request, reply) => {
+    reply.header('Cache-Control', 'no-store');
+    const sid = cookieValue(request, 'ha_sid');
+    let session = sid ? sessions.get(sid) : undefined;
+    if (session && session.expiresAt <= now()) {
+      if (sid) sessions.delete(sid);
+      session = undefined;
+    }
+    const needsSession = request.method === 'GET' &&
+      (request.url === '/api/cart' || request.url === '/cart' || request.url.startsWith('/cart?'));
+    if (!session && needsSession) {
+      // Fastify's default request.ip is the transport peer, not a spoofable X-Forwarded-For value.
+      const clientIp = request.ip;
+      const time = now();
+      if (time - sessionCreationWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+        sessionCreationWindow = { startedAt: time, count: 0 };
+      }
+      if (sessionCreationByIp.size >= MAX_SESSION_CREATION_IPS) {
+        for (const [ip, budget] of sessionCreationByIp) {
+          if (time - budget.startedAt >= SESSION_CREATION_WINDOW_MS) sessionCreationByIp.delete(ip);
+        }
+      }
+      const previousBudget = sessionCreationByIp.get(clientIp);
+      const budget = previousBudget && time - previousBudget.startedAt < SESSION_CREATION_WINDOW_MS
+        ? previousBudget : { startedAt: time, count: 0 };
+      if (sessionCreationWindow.count >= MAX_SESSION_CREATIONS_PER_WINDOW ||
+        budget.count >= MAX_SESSIONS_PER_IP_PER_WINDOW ||
+        (!previousBudget && sessionCreationByIp.size >= MAX_SESSION_CREATION_IPS)) {
+        reply.header('Retry-After', '60');
+        reply.code(429).send({ error: { code: 'SESSION_RATE_LIMITED', message: 'Слишком много новых сессий. Повторите позже.', requestId: String(request.id) } });
+        return;
+      }
+      if (sessions.size >= 1000) {
+        for (const [id, value] of sessions) if (value.expiresAt <= time) sessions.delete(id);
+      }
+      if (sessions.size >= MAX_SESSIONS) {
+        // Keep carts intact. Evict an empty session rather than deny every newcomer.
+        for (const [id, value] of sessions) {
+          if (value.items.length === 0 && value.confirmations.size === 0 &&
+            (!value.proposal || value.proposal.used || value.proposal.expiresAt <= time)) {
+            sessions.delete(id);
+            break;
+          }
+        }
+      }
+      if (sessions.size >= MAX_SESSIONS) {
+        reply.code(429).send({ error: { code: 'SESSION_LIMIT', message: 'Сервис временно занят.', requestId: String(request.id) } });
+        return;
+      }
+      budget.count++;
+      sessionCreationByIp.set(clientIp, budget);
+      sessionCreationWindow.count++;
+      const id = randomBytes(32).toString('hex');
+      session = {
+        csrfToken: randomBytes(32).toString('hex'),
+        expiresAt: time + SESSION_MS,
+        items: [], proposal: null, lastProductId: null, modelCallsUsed: 0,
+        recentProductIds: [], recentCategories: [],
+        attachmentWindow: { startedAt: time, count: 0 },
+        confirmations: new Map(), lock: Promise.resolve(),
+      };
+      sessions.set(id, session);
+      const publicApiOrigin = options.apiOrigin || process.env.API_ORIGIN || '';
+      const secure = request.protocol === 'https' || publicApiOrigin.startsWith('https://') ||
+        process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
+      const cookieScope = '; Path=/; SameSite=Lax; Max-Age=14400' + (secure ? '; Secure' : '');
+      reply.header('Set-Cookie', [
+        'ha_sid=' + id + '; HttpOnly' + cookieScope,
+        'csrf_token=' + session.csrfToken + cookieScope,
+      ]);
+    }
+    if (session) sessionFor.set(request, session);
+  });
+
+  function sessionOf(request: object): Session {
+    const session = sessionFor.get(request);
+    if (!session) throw new ApiFailure(403, 'SESSION_REQUIRED', 'Откройте корзину и повторите действие.');
+    return session;
+  }
+
+  function verifyMutation(request: { headers: { origin?: string; host?: string; 'x-csrf-token'?: string | string[] }; protocol: string }) {
+    const origin = request.headers.origin;
+    const apiOrigin = options.apiOrigin || process.env.API_ORIGIN || 'http://127.0.0.1:3001';
+    const webOrigin = options.webOrigin || process.env.WEB_ORIGIN;
+    if (!origin || (origin !== apiOrigin && origin !== webOrigin)) {
+      throw new ApiFailure(403, 'ORIGIN_INVALID', 'Источник запроса не разрешён.');
+    }
+    const token = request.headers['x-csrf-token'];
+    if (typeof token !== 'string' || !safeEqual(token, sessionOf(request).csrfToken)) {
+      throw new ApiFailure(403, 'CSRF_INVALID', 'Обновите страницу и повторите действие.');
+    }
+  }
+
+  async function confirm(session: Session, proposalId: string, key: string, requestId: string) {
+    return locked(session, async () => {
+      const prior = session.confirmations.get(key);
+      if (prior) {
+        if (prior.proposalId !== proposalId) throw new ApiFailure(409, 'IDEMPOTENCY_CONFLICT', 'Ключ уже использован.');
+        return prior.result;
+      }
+      const proposal = session.proposal;
+      if (!proposal || proposal.id !== proposalId) throw new ApiFailure(409, 'PROPOSAL_NOT_FOUND', 'Предложение не найдено в этой сессии.');
+      if (proposal.used) throw new ApiFailure(409, 'PROPOSAL_ALREADY_USED', 'Предложение уже подтверждено.');
+      if (proposal.expiresAt <= now()) throw new ApiFailure(409, 'PROPOSAL_EXPIRED', 'Срок предложения истёк.');
+      // Resolve and validate the whole proposal before changing any item.
+      const freshItems: { product: Product; quantity: number }[] = [];
+      for (const proposed of proposal.items) {
+        const fresh = await catalog.getById(proposed.productId);
+        if (!fresh || fresh.stock.available === null || fresh.stock.status !== 'in_stock') {
+          throw new ApiFailure(409, 'STOCK_UNAVAILABLE', 'Наличие товара сейчас не подтверждено.');
+        }
+        if (fresh.sku !== proposed.sku || fresh.name !== proposed.name) {
+          throw new ApiFailure(409, 'PRODUCT_CHANGED', 'Данные товара изменились. Запросите новое предложение.');
+        }
+        const existing = session.items.find((item) => item.productId === fresh.id);
+        if ((existing?.quantity || 0) + proposed.quantity > fresh.stock.available) {
+          throw new ApiFailure(409, 'INSUFFICIENT_STOCK', 'Недостаточный остаток. Требуется новое подтверждение.', fresh.stock.available);
+        }
+        freshItems.push({ product: fresh, quantity: proposed.quantity });
+      }
+      if (session.proposal !== proposal) {
+        throw new ApiFailure(409, 'PROPOSAL_NOT_FOUND', 'Предложение больше не ожидает подтверждения.');
+      }
+      if (proposal.expiresAt <= now()) {
+        throw new ApiFailure(409, 'PROPOSAL_EXPIRED', 'Срок предложения истёк.');
+      }
+      for (const { product: fresh, quantity } of freshItems) {
+        const existing = session.items.find((item) => item.productId === fresh.id);
+        if (existing) {
+          existing.quantity += quantity;
+          existing.availableAtConfirmation = fresh.stock.available;
+        } else {
+          session.items.push({
+            productId: fresh.id, sku: fresh.sku, name: fresh.name,
+            quantity, availableAtConfirmation: fresh.stock.available,
+          });
+        }
+      }
+      proposal.used = true;
+      const result = { cart: cartSnapshot(session), cartUrl: CART_URL, status: 'added' as const, requestId };
+      session.confirmations.set(key, { proposalId, result });
+      return result;
+    });
+  }
+
+  app.get('/api/health', async () => ({ ok: true, catalog: catalog.source === 'catalog_live' ? 'live' : 'demo',
+    model: externalProcessingAllowed || Boolean(options.modelGateway) ? 'ready' : 'fallback' }));
+
+  app.get('/api/cart', async (request) => ({
+    ...cartSnapshot(sessionOf(request)), cartUrl: CART_URL, mode: 'demo', csrfToken: sessionOf(request).csrfToken,
+  }));
+
+  app.post('/api/cart/confirm', async (request) => {
+    verifyMutation(request);
+    const body = request.body;
+    if (!isRecord(body) || typeof body.proposalId !== 'string' || typeof body.idempotencyKey !== 'string' ||
+      !/^[a-zA-Z0-9_-]{8,128}$/.test(body.proposalId) || !/^[a-zA-Z0-9_-]{8,128}$/.test(body.idempotencyKey)) {
+      throw new ApiFailure(400, 'INVALID_INPUT', 'Укажите proposalId и idempotencyKey.');
+    }
+    return confirm(sessionOf(request), body.proposalId, body.idempotencyKey, String(request.id));
+  });
+
+  app.post('/api/attachments', async (request) => {
+    verifyMutation(request);
+    const locale = request.headers['x-attachment-locale'] === 'kk' || request.headers['x-image-locale'] === 'kk'
+      ? 'kk' : 'ru';
+    if (!request.isMultipart()) throw new ApiFailure(415, 'UNSUPPORTED_FILE', 'Ожидается один файл в multipart/form-data.');
+    const session = sessionOf(request);
+    const time = now();
+    if (time - session.attachmentWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+      session.attachmentWindow = { startedAt: time, count: 0 };
+    }
+    if (time - attachmentWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+      attachmentWindow = { startedAt: time, count: 0 };
+    }
+    if (session.attachmentWindow.count >= MAX_ATTACHMENTS_PER_SESSION_PER_WINDOW ||
+        attachmentWindow.count >= MAX_ATTACHMENTS_PER_PROCESS_PER_WINDOW) {
+      throw new ApiFailure(429, 'ATTACHMENT_RATE_LIMIT', 'Лимит загрузок достигнут. Повторите через минуту.');
+    }
+    if (activeAttachmentJobs >= 4) throw new ApiFailure(429, 'ATTACHMENT_BUSY', 'Обработка файлов занята. Повторите позже.');
+    session.attachmentWindow.count++;
+    attachmentWindow.count++;
+    activeAttachmentJobs++;
+    try {
+      const file = await request.file();
+      if (!file || file.fieldname !== 'file') throw new ApiFailure(400, 'INVALID_INPUT', 'Передайте один файл в поле file.');
+      session.proposal = null;
+      const bytes = await file.toBuffer();
+      if (/\.(?:jpe?g|png)$/iu.test(file.filename) || /^image\/(?:jpeg|png)/iu.test(file.mimetype)) {
+        if (activeImageJobs >= 2) throw new ApiFailure(429, 'IMAGE_BUSY', 'Обработка фотографий занята. Повторите позже.');
+        activeImageJobs++;
+        try {
+          const consent = request.headers['x-photo-consent'] === 'true';
+          const canProcessExternally = externalProcessingAllowed || Boolean(options.modelGateway);
+          const prepared = await prepareCustomerImage({ buffer: bytes, filename: file.filename, mimeType: file.mimetype }, {
+            customerConsented: consent, externalProcessingAllowed: canProcessExternally,
+          });
+          const initialWarning = locale === 'kk' && prepared.status === 'manual_review'
+            ? prepared.reason === 'CUSTOMER_CONSENT_REQUIRED'
+              ? 'Фотоны талдау үшін клиенттің жеке келісімі керек. Артикулды мәтінмен енгізіңіз.'
+              : 'Сыртқы фото талдауға сервер рұқсаты жоқ. Артикулды мәтінмен енгізіңіз.'
+            : prepared.warning;
+          const manual = { candidates: [], products: [] as Product[], requiresManualReview: true as const,
+            cartChanged: false, factsSource: catalog.source, warning: initialWarning, requestId: String(request.id) };
+          if (prepared.status !== 'ready_for_vision') return { ...manual, photoAnalysis: { status: 'manual_review', reason: prepared.reason } };
+          const route = routeUserRequest('', { imagePresent: true, customerConsented: consent,
+            externalProcessingAllowed: canProcessExternally, modelCallsUsed: session.modelCallsUsed });
+          if (route.executionTier !== 'vision') return { ...manual,
+            warning: locale === 'kk' ? 'Фото талдау шегі бітті. Артикулды қолмен енгізіңіз.'
+              : 'Лимит анализа фото достигнут. Укажите артикул вручную.',
+            photoAnalysis: { status: 'manual_review', reason: 'MODEL_BUDGET' } };
+          session.modelCallsUsed++;
+          let observation = await modelGateway.analyzeImage({ ...prepared.image, locale });
+          if (!observation.ok) return { ...manual,
+            warning: locale === 'kk' ? 'Фото қабылданды, бірақ тану қазір қолжетімсіз. Артикулды қолмен енгізіңіз.'
+              : 'Фото принято, но распознавание сейчас недоступно. Укажите артикул вручную.',
+            photoAnalysis: { status: 'manual_review', reason: 'MODEL_UNAVAILABLE' } };
+          const matchObservations = async (skus: readonly string[], terms: readonly string[]): Promise<Product[]> => {
+            const ids = new Set<string>();
+            const observedSkuById = new Map<string, string>();
+            for (const sku of skus.slice(0, 4)) {
+              for (const row of options.catalogIndex?.findExactSku(sku) ?? []) {
+                ids.add(row.id);
+                observedSkuById.set(row.id, sku);
+              }
+            }
+            for (const phrase of terms.slice(0, 3)) {
+              const query = searchTerms(phrase).slice(0, 200);
+              if (!query) continue;
+              let rows = options.catalogIndex?.search(query, { limit: 2 }) ?? [];
+              if (!rows.length) rows = options.catalogIndex?.search(query, { match: 'any', limit: 2 }) ?? [];
+              for (const row of rows) ids.add(row.id);
+            }
+            const selectedIds = [...ids].slice(0, 4);
+            const productReads = await Promise.allSettled(selectedIds.map((id) => catalog.getById(id)));
+            const products = productReads.flatMap((result, position) => {
+              const expectedSku = observedSkuById.get(selectedIds[position]!);
+              return result.status === 'fulfilled' && result.value &&
+                (!expectedSku || result.value.sku.toLocaleUpperCase('ru') === expectedSku.toLocaleUpperCase('ru'))
+                ? [result.value] : [];
+            });
+            if (!options.catalogIndex && skus.length) {
+              for (const sku of skus.slice(0, 2)) {
+                try {
+                  const product = await catalog.findBySku(sku);
+                  if (product && !products.some((item) => item.id === product.id)) products.push(product);
+                } catch (error) {
+                  if (!(error instanceof CatalogError) || error.code !== 'CATALOG_SEARCH_INCOMPLETE') throw error;
+                }
+              }
+            }
+            return products;
+          };
+          let products = await matchObservations(observation.skus, observation.searchTerms);
+          let escalated = false;
+          const exactSkuMatched = products.some((product) => observation.skus.some((sku) =>
+            product.sku.toLocaleUpperCase('ru') === sku.toLocaleUpperCase('ru')));
+          if ((!products.length || !exactSkuMatched) && options.catalogIndex?.size) {
+            const secondRoute = routeUserRequest('', { imagePresent: true, customerConsented: consent,
+              externalProcessingAllowed: canProcessExternally, modelCallsUsed: session.modelCallsUsed });
+            if (secondRoute.executionTier === 'vision') {
+              session.modelCallsUsed++;
+              escalated = true;
+              const stronger = await modelGateway.analyzeImage({ ...prepared.image, locale, highAccuracy: true });
+              if (stronger.ok) {
+                const strongerProducts = await matchObservations(stronger.skus, stronger.searchTerms);
+                if (strongerProducts.length) {
+                  observation = stronger;
+                  products = strongerProducts;
+                }
+              }
+            }
+          }
+          const reply = products.length
+            ? (locale === 'kk'
+              ? 'Фотодағы белгілер бойынша ықтимал тауарлар табылды. Сатып аларда бұйымдағы артикулды салыстырыңыз. '
+              : 'По признакам на фото найдены возможные товары. Сверьте артикул на изделии перед покупкой. ') +
+              products.map((product) => productReply(product, [], locale)).join(' ')
+            : locale === 'kk'
+              ? 'Фото бойынша қолжетімді каталогта тауар расталмады. Таңбалаудың анық фотосын немесе артикулын жіберіңіз.'
+              : 'Не удалось подтвердить товар по фото в доступной части каталога. Пришлите чёткое фото маркировки или артикул.';
+          rememberProducts(session, products);
+          session.lastProductId = null;
+          return { ...manual, products, reply,
+            warning: products.length
+              ? locale === 'kk'
+                ? 'Фотода танылған белгілер тек болжам. Көрсетілген тауар мен қалдық каталогтың ағымдағы карточкасымен тексерілді; үйлесімділікті бөлек тексеріңіз.'
+                : 'Распознанные признаки фото являются подсказками. Показанные товар и остаток сверены по текущей карточке каталога; совместимость требует отдельной проверки.'
+              : locale === 'kk'
+                ? 'Фото белгілері каталогта расталмады; тауар мен қалдық белгісіз.'
+                : 'Признаки с фото не удалось подтвердить в доступной части каталога; товар и остаток остаются неизвестными.',
+            photoAnalysis: { status: 'analyzed', observedSkus: observation.skus,
+              searchTerms: observation.searchTerms, observationsUnverified: true,
+              model: observation.model, escalated } };
+        } finally {
+          activeImageJobs--;
+        }
+      }
+      const result = await extractAttachmentCandidates({
+        buffer: bytes, filename: file.filename, mimeType: file.mimetype,
+      });
+      if (result.declaredType === 'pdf' || result.declaredType === 'docx' || result.declaredType === 'xlsx') {
+        if (activeDocumentJobs >= 2) throw new ApiFailure(429, 'DOCUMENT_BUSY', 'Обработка документов занята. Повторите позже.');
+        activeDocumentJobs++;
+        try {
+          const extracted = await extractDocumentCandidates(result.declaredType, bytes, locale);
+          const candidateSkus = [...new Set(extracted.candidates.map((candidate) => candidate.sku))].slice(0, 4);
+          const current = await Promise.allSettled(candidateSkus.map((sku) => catalog.findBySku(sku)));
+          const products = current.flatMap((entry, position) => entry.status === 'fulfilled' && entry.value &&
+            entry.value.sku.toLocaleUpperCase('ru') === candidateSkus[position]!.toLocaleUpperCase('ru')
+            ? [entry.value] : []);
+          return { ...result, candidates: extracted.candidates, products, warning: extracted.warning,
+            cartChanged: false, factsSource: catalog.source, requestId: String(request.id) };
+        } finally {
+          activeDocumentJobs--;
+        }
+      }
+      return { ...result, cartChanged: false, requestId: String(request.id) };
+    } finally {
+      activeAttachmentJobs--;
+    }
+  });
+
+  app.post('/api/chat', async (request) => {
+    verifyMutation(request);
+    const body = request.body;
+    if (!isRecord(body) || typeof body.message !== 'string' || body.message.trim().length < 1 || body.message.length > 2000 ||
+      (body.locale !== undefined && body.locale !== 'ru' && body.locale !== 'kk')) {
+      throw new ApiFailure(400, 'INVALID_INPUT', 'Введите сообщение до 2000 символов.');
+    }
+    const message = body.message.trim();
+    const locale = body.locale === 'kk' ? 'kk' : 'ru';
+    const session = sessionOf(request);
+    const basic = { products: [] as Product[], analogs: [] as Awaited<ReturnType<CatalogProvider['findAnalogs']>>,
+      proposal: null as null | { id: string; items: { productId: string; quantity: number }[]; expiresAt: string },
+      factsSource: catalog.source as string, cartChanged: false, requestId: String(request.id) };
+
+    if (isExplicitConfirmation(message)) {
+      const proposal = session.proposal;
+      if (!proposal || proposal.used) return { ...basic, reply: locale === 'kk'
+        ? 'Растауды күтіп тұрған ұсыныс жоқ.' : 'Нет предложения, ожидающего подтверждения.' };
+      const result = await confirm(session, proposal.id, 'chat_' + proposal.id, String(request.id));
+      return { ...basic, reply: locale === 'kk' ? 'Демо себетке қосылды.' : 'Добавлено в демонстрационную корзину.', cartChanged: true,
+        cart: result.cart, cartUrl: CART_URL };
+    }
+
+    // Any intervening message invalidates an old consent request.
+    session.proposal = null;
+    const route = routeUserRequest(message, boundedRoutingContext({
+      modelCallsUsed: session.modelCallsUsed,
+      externalProcessingAllowed: externalProcessingAllowed || Boolean(options.modelGateway),
+      recentProductIds: session.recentProductIds,
+      recentCategories: session.recentCategories,
+    }));
+    if (route.task === 'unsafe') return { ...basic, reply: locale === 'kk'
+      ? 'Құпия деректерді немесе ішкі нұсқауларды аша алмаймын. Тауар туралы сұрағыңызды жазыңыз.'
+      : 'Не могу раскрывать секреты или внутренние инструкции. Задайте вопрос о товаре.' };
+
+    const sku = extractSku(message);
+    const addIntent = isAddIntent(message);
+    const requested = addIntent ? requestedItems(message) : [];
+    if (addIntent && requested.some((item) => !Number.isSafeInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000)) {
+      throw new ApiFailure(400, 'INVALID_QUANTITY', locale === 'kk'
+        ? 'Әр тауар үшін 1-ден 1000-ға дейінгі нақты бүтін санды көрсетіңіз.'
+        : 'Для каждого товара укажите точное целое количество от 1 до 1000.');
+    }
+    const terms = detectsPurchaseTerms(message) ? answerPurchaseTerms(locale) : null;
+    if (terms && !sku) {
+      return { ...basic, reply: terms.reply, factsSource: 'partner_policy',
+        sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt };
+    }
+    if (!sku && session.lastProductId && route.task === 'search' && isProductFollowup(message)) {
+      const product = await catalog.getById(session.lastProductId);
+      if (product) {
+        rememberProducts(session, [product]);
+        const analogs = product.stock.status === 'out_of_stock'
+          ? (await catalog.findAnalogs(product)).map((analog) => localizeAnalog(analog, locale)) : [];
+        return { ...basic, products: [product], analogs, reply: productReply(product, analogs, locale), modelTier: 'rules' };
+      }
+      session.lastProductId = null;
+    }
+    if (addIntent && requested.length > 1) {
+      const found = await Promise.all(requested.map((item) => catalog.findBySku(item.sku)));
+      const missing = requested.filter((_, index) => !found[index]).map((item) => item.sku);
+      if (missing.length) return { ...basic, products: found.filter((item): item is Product => item !== null),
+        reply: locale === 'kk'
+          ? 'Барлық позиция расталмады. Каталогтан табылмаған артикулдар: ' + missing.join(', ') + '. Себетке ұсыныс жасалмады.'
+          : 'Не все позиции подтверждены. Не найдены артикулы: ' + missing.join(', ') + '. Предложение для корзины не создано.' };
+      const products = found as Product[];
+      if (new Set(products.map((item) => item.id)).size !== products.length) {
+        throw new ApiFailure(400, 'DUPLICATE_PRODUCT', locale === 'kk'
+          ? 'Бір тауар бірнеше рет көрсетілген. Санын нақтылаңыз.'
+          : 'Один товар указан несколько раз. Уточните количество.');
+      }
+      session.lastProductId = null;
+      rememberProducts(session, products);
+      const facts = products.map((item) => productReply(item, [], locale)).join(' ') +
+        (terms ? ' ' + terms.reply : '');
+      const unavailable = requested.find((item, index) => {
+        const product = products[index]!;
+        const already = session.items.find((entry) => entry.productId === product.id)?.quantity || 0;
+        return product.stock.available === null || product.stock.status !== 'in_stock' ||
+          already + item.quantity > product.stock.available;
+      });
+      if (unavailable) return { ...basic, products,
+        ...(terms ? { sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt } : {}),
+        reply: facts + (locale === 'kk'
+        ? ' ' + unavailable.sku + ' артикулының сұралған саны расталмады. Ешбір позиция бойынша ұсыныс жасалмады.'
+        : ' Запрошенное количество для ' + unavailable.sku + ' не подтверждено. Предложение не создано ни для одной позиции.') };
+      const proposal: Proposal = { id: randomUUID(),
+        items: products.map((product, index) => ({ productId: product.id, sku: product.sku,
+          name: product.name, quantity: requested[index]!.quantity })),
+        expiresAt: now() + PROPOSAL_MS, used: false };
+      session.proposal = proposal;
+      return { ...basic, products,
+        ...(terms ? { sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt } : {}),
+        reply: facts + (locale === 'kk'
+        ? ' Барлық позицияны демо себетке қосу үшін бөлек растаңыз. Себет әзірге өзгерген жоқ.'
+        : ' Подтвердите отдельным действием добавление всех позиций в демонстрационную корзину. Корзина пока не изменена.'),
+        proposal: { id: proposal.id,
+          items: proposal.items.map((item) => ({ productId: item.productId, quantity: item.quantity })),
+          expiresAt: new Date(proposal.expiresAt).toISOString() } };
+    }
+    if (route.task === 'multi_category' || route.task === 'project' || (route.task === 'search' && !sku)) {
+      const comparison = /сравн|что\s+лучше|қайсысы\s+жақсы/iu.test(message) && session.recentProductIds.length >= 2;
+      let products = comparison
+        ? (await Promise.all(session.recentProductIds.slice(-2).map((id) => catalog.getById(id))))
+          .filter((item): item is Product => item !== null)
+        : await indexedProducts(message, route.categoriesMentioned, route.task === 'project');
+      if (products.length) {
+        let model: string | undefined;
+        // Reserve after the catalog await. Concurrent messages cannot both
+        // consume the same final per-session model-call slot.
+        const currentTier = routeUserRequest(message, boundedRoutingContext({
+          modelCallsUsed: session.modelCallsUsed,
+          externalProcessingAllowed: externalProcessingAllowed || Boolean(options.modelGateway),
+          recentProductIds: session.recentProductIds,
+          recentCategories: session.recentCategories,
+        })).executionTier;
+        if (!comparison && (currentTier === 'light' || currentTier === 'balanced' || currentTier === 'deep')) {
+          session.modelCallsUsed++;
+          const result = await modelGateway.answerWithCandidates({
+            message, locale, tier: currentTier, candidates: products,
+          });
+          if (result.ok) {
+            model = result.model;
+            if (result.referencedProductIds.length) {
+              const ranked = new Map(products.map((item) => [item.id, item]));
+              const preferred = result.referencedProductIds.flatMap((id) => ranked.get(id) ? [ranked.get(id)!] : []);
+              // Model IDs only change order. They cannot silently remove a
+              // requested category or make the catalog appear incomplete.
+              products = [...preferred, ...products.filter((item) => !preferred.some((entry) => entry.id === item.id))];
+            }
+          }
+        }
+        // A collection never selects a lastProductId for an implicit cart add.
+        session.lastProductId = null;
+        rememberProducts(session, products);
+        const differentCategories = comparison && products.length === 2 && products.every((item) => item.category) &&
+          products[0]!.category!.toLocaleLowerCase('ru') !== products[1]!.category!.toLocaleLowerCase('ru');
+        const intro = comparison
+          ? differentCategories
+            ? (locale === 'kk'
+              ? 'Соңғы екі тауар әртүрлі санатта. Оларды бір-бірінің баламасы деп санауға болмайды; қолдану мақсатын нақтылаңыз.'
+              : 'Последние два товара из разных категорий. Их нельзя считать заменой друг другу; уточните назначение.')
+            : (locale === 'kk'
+              ? 'Соңғы екі тауардың ағымдағы карточкаларын көрсетемін. Таңдау үшін маңызды параметрлерді нақтылаңыз.'
+              : 'Показываю текущие карточки двух последних товаров. Уточните важные для выбора параметры.')
+          : route.task === 'project'
+          ? (locale === 'kk'
+            ? 'Үй жобасы үшін бөлмелер санын, жүктемені және қажетті сызбаны нақтылаңыз. Қазір тек каталогтағы ықтимал тауарларды көрсетемін.'
+            : 'Для проекта дома уточните число помещений, нагрузку и схему. Пока показываю только возможные товары из каталога.')
+          : (locale === 'kk' ? 'Каталогтың тексерілген бөлігінен ықтимал тауарлар:'
+            : 'Возможные товары из проверенной части каталога:');
+        return { ...basic, products, modelTier: model ? currentTier : 'rules',
+          reply: intro + ' ' + products.map((item) => productReply(item, [], locale)).join(' ') };
+      }
+      if (route.task === 'project') return { ...basic, reply: locale === 'kk'
+        ? 'Үйге электр жабдықтарын таңдауға бөлмелер саны, жүктеме, схема және орнату шарттары қажет. Артикулдарды тексеру үшін нақтылаңыз.'
+        : 'Для подбора электрики дома нужны число помещений, нагрузка, схема и условия монтажа. Уточните их, чтобы проверить конкретные товары.' };
+    }
+    let product = sku ? await catalog.findBySku(sku) : null;
+    if (!product && !sku && addIntent && session.lastProductId) {
+      product = await catalog.getById(session.lastProductId);
+    }
+    if (!product) return { ...basic, reply: sku
+      ? (locale === 'kk' ? 'Артикул ' + sku + ' қолжетімді каталогтан табылмады.' : 'Артикул ' + sku + ' не найден в доступном каталоге.')
+      : (locale === 'kk' ? 'Сипаттамалары мен қоймадағы санын тексеру үшін тауар артикулын көрсетіңіз.' : 'Укажите артикул товара, чтобы проверить характеристики и остаток.') };
+
+    session.lastProductId = product.id;
+    rememberProducts(session, [product]);
+    const analogs = product.stock.status === 'out_of_stock'
+      ? (await catalog.findAnalogs(product)).map((analog) => localizeAnalog(analog, locale)) : [];
+    const response = { ...basic, products: [product], analogs,
+      ...(terms ? { sourceUrl: terms.sourceUrl, checkedAt: terms.checkedAt } : {}),
+      reply: productReply(product, analogs, locale) + (terms ? ' ' + terms.reply : '') };
+    if (!addIntent) return response;
+    const quantity = requested[0]?.quantity ?? 1;
+    const already = session.items.find((item) => item.productId === product.id)?.quantity || 0;
+    if (product.stock.available === null || product.stock.status !== 'in_stock') {
+      return { ...response, reply: response.reply + (locale === 'kk'
+        ? ' Қоймадағы қалдық расталмайынша себетке қосу мүмкін емес.'
+        : ' Добавление невозможно без подтверждённого остатка.') };
+    }
+    if (already + quantity > product.stock.available) {
+      return { ...response, reply: response.reply + (locale === 'kk'
+        ? ' Сұралған сан себеттегі тауармен бірге қолжетімді қалдықтан асады.'
+        : ' Запрошенное количество превышает доступный остаток с учётом корзины.') };
+    }
+    const proposal: Proposal = { id: randomUUID(), items: [{ productId: product.id, sku: product.sku,
+      name: product.name, quantity }], expiresAt: now() + PROPOSAL_MS, used: false };
+    session.proposal = proposal;
+    return { ...response, reply: response.reply + (locale === 'kk'
+      ? ' Демо себетке ' + quantity + ' дана қосу үшін бөлек растаңыз.'
+      : ' Подтвердите отдельным действием добавление ' + quantity + ' шт. в демонстрационную корзину.'),
+      proposal: { id: proposal.id, items: [{ productId: product.id, quantity }], expiresAt: new Date(proposal.expiresAt).toISOString() } };
+  });
+
+  app.get('/cart', async (request, reply) => {
+    const cart = cartSnapshot(sessionOf(request));
+    const kk = isRecord(request.query) && request.query.lang === 'kk';
+    const rows = cart.items.map((item) => '<li>' + escapeHtml(item.name) + ' (' + escapeHtml(item.sku) + ') — ' +
+      item.quantity + (kk ? ' дана' : ' шт.') + '</li>').join('');
+    reply.type('text/html; charset=utf-8');
+    reply.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
+    return '<!doctype html><html lang="' + (kk ? 'kk' : 'ru') + '"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>' +
+      (kk ? 'Демо себет' : 'Демо-корзина') + '</title><main style="max-width:42rem;margin:3rem auto;padding:1rem;font:1rem system-ui"><h1>' +
+      (kk ? 'Демонстрациялық себет' : 'Демонстрационная корзина') + '</h1><p>' +
+      (kk ? 'Бұл прототиптің себеті, ekt.kz себеті емес. Мұнда тапсырыс беру және төлеу мүмкін емес.'
+        : 'Это корзина прототипа, не ekt.kz. Заказ и оплата здесь недоступны.') + '</p><ul>' +
+      (rows || (kk ? '<li>Себет бос.</li>' : '<li>Корзина пуста.</li>')) + '</ul><p>' +
+      (kk ? 'Барлығы: ' : 'Всего: ') + cart.itemCount + (kk ? ' дана.' : ' шт.') + '</p></main></html>';
+  });
+
+  app.setErrorHandler((error, request, reply) => {
+    const failure = error instanceof ApiFailure ? error : null;
+    const attachmentFailure = error instanceof AttachmentError || error instanceof ImageInputError ||
+      error instanceof DocumentExtractionError ? error : null;
+    const errorStatus = isRecord(error) && typeof error.statusCode === 'number' ? error.statusCode : 503;
+    const catalogStatus = error instanceof CatalogError
+      ? error.code === 'CATALOG_UNAUTHORIZED' ? 403 : error.code === 'CATALOG_RATE_LIMITED' ? 429 : 503
+      : null;
+    const status = failure?.statusCode || attachmentFailure?.statusCode || catalogStatus || (errorStatus < 500 ? errorStatus : 503);
+    const code = failure?.code || attachmentFailure?.code || (error instanceof CatalogError ? error.code :
+      status === 413 ? 'PAYLOAD_TOO_LARGE' : status === 400 ? 'INVALID_INPUT' : 'SERVICE_UNAVAILABLE');
+    const defaultMessage = failure?.message || attachmentFailure?.message || (error instanceof CatalogError ? error.message :
+      status === 503 ? 'Сервис временно недоступен. Повторите позже.' : 'Некорректный запрос.');
+    const isAttachment = request.url.startsWith('/api/attachments');
+    const isKazakhAttachment = isAttachment &&
+      (request.headers['x-attachment-locale'] === 'kk' || request.headers['x-image-locale'] === 'kk');
+    const isKazakhChat = request.url.startsWith('/api/chat') && isRecord(request.body) && request.body.locale === 'kk';
+    const isKazakhCart = request.url.startsWith('/api/cart/confirm') && request.headers['x-response-locale'] === 'kk';
+    const message = isKazakhAttachment
+      ? KAZAKH_ATTACHMENT_ERRORS[code] ?? KAZAKH_API_ERRORS[code] ?? defaultMessage
+      : isKazakhChat || isKazakhCart ? KAZAKH_API_ERRORS[code] ?? defaultMessage : defaultMessage;
+    const detail = failure?.available === undefined ? {} : { available: failure.available };
+    reply.code(status).send({ error: { code, message, requestId: String(request.id), ...detail }, ...detail });
+  });
+
+  return app;
+}

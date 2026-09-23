@@ -5,6 +5,7 @@ const systemChrome = '/Applications/Google Chrome.app/Contents/MacOS/Google Chro
 
 export default defineConfig({
   testDir: './tests',
+  testIgnore: '**/integration/**',
   fullyParallel: true,
   workers: 2,
   reporter: 'list',

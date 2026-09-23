@@ -19,9 +19,9 @@ const labels: Record<string, [string, string]> = {
 };
 export const specLabel = (key: string, locale: Locale) => labels[key]?.[locale === 'kk' ? 1 : 0] || key;
 
-export function Quantity({ value, onChange, disabled, locale, max = 1000 }: { value: number; onChange: (n: number) => void; disabled?: boolean; locale: Locale; max?: number }) {
+export function Quantity({ value, onChange, disabled, locale, max = 1000, label }: { value: number; onChange: (n: number) => void; disabled?: boolean; locale: Locale; max?: number; label?: string }) {
   const t = strings(locale);
-  return <div className="quantity"><button type="button" aria-label={t.decrease} disabled={disabled || value <= 1} onClick={() => onChange(Math.max(1, value - 1))}><Minus size={16} /></button><input aria-label={t.quantity} type="number" min="1" max={max} step="1" inputMode="numeric" value={value || ''} onChange={e => onChange(Number(e.target.value))} disabled={disabled} /><button type="button" aria-label={t.increase} disabled={disabled || value >= max} onClick={() => onChange(Math.min(max, value + 1))}><Plus size={16} /></button></div>;
+  return <div className="quantity"><button type="button" aria-label={t.decrease} disabled={disabled || value <= 1} onClick={() => onChange(Math.max(1, value - 1))}><Minus size={16} /></button><input aria-label={label || t.quantity} type="number" min="1" max={max} step="1" inputMode="numeric" value={value || ''} onChange={e => onChange(Number(e.target.value))} disabled={disabled} /><button type="button" aria-label={t.increase} disabled={disabled || value >= max} onClick={() => onChange(Math.min(max, value + 1))}><Plus size={16} /></button></div>;
 }
 
 export function ProductCard({ product, locale, quantity, onQuantity, onPrepare, disabled, original, analog }: {

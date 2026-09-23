@@ -33,7 +33,7 @@ export function Assistant({ initialLocale }: { initialLocale?: Locale }) {
   const [retry, setRetry] = useState<Retry | null>(null);
   const [source, setSource] = useState<'live' | 'demo' | 'unavailable' | 'checking'>('checking');
   const [pending, setPending] = useState<Pending | null>(null);
-  const [proposalQuantity, setProposalQuantity] = useState(1);
+  const [proposalQuantities, setProposalQuantities] = useState<Record<string, number>>({});
   const [quantities, setQuantities] = useState<Record<string, number>>({});
   const [clock, setClock] = useState(Date.now());
   const [file, setFile] = useState<File | null>(null);
@@ -52,7 +52,7 @@ export function Assistant({ initialLocale }: { initialLocale?: Locale }) {
   const uncertain = retry?.kind === 'confirm' && (!(error instanceof ApiFailure) || ['TIMEOUT', 'NETWORK', 'INVALID_RESPONSE'].includes(error.code) || (error.status ?? Number(error.code)) >= 500);
   const disabled = Boolean(busy) || uncertain;
   const expired = pending ? Date.parse(pending.proposal.expiresAt) <= clock : false;
-  const proposalChanged = pending ? pending.proposal.items[0]?.quantity !== proposalQuantity : false;
+  const proposalChanged = pending ? pending.proposal.items.some(item => item.quantity !== proposalQuantities[item.productId]) : false;
 
   useEffect(() => {
     api.health().then(result => setSource(result.catalog)).catch(() => setSource('unavailable'));
@@ -115,7 +115,7 @@ export function Assistant({ initialLocale }: { initialLocale?: Locale }) {
     addLine({ role: 'assistant', text: response.reply, response, locale: language, cartUrl: response.cartChanged ? response.cartUrl : undefined });
     if (response.proposal) {
       setPending({ proposal: response.proposal, products: [...response.products, ...response.analogs.map(a => a.product)], key: crypto.randomUUID() });
-      setProposalQuantity(response.proposal.items[0]?.quantity || 1); setClock(Date.now());
+      setProposalQuantities(Object.fromEntries(response.proposal.items.map(item => [item.productId, item.quantity]))); setClock(Date.now());
     }
     if (response.cartChanged && response.cart) { publishCart(response.cart); api.cart().catch(() => {}); }
   }
@@ -138,6 +138,18 @@ export function Assistant({ initialLocale }: { initialLocale?: Locale }) {
     const message = locale === 'kk' ? `Артикул ${sku}, себетке ${quantity} дана қос` : `Добавь ${quantity} шт. артикул ${sku}`;
     void send(message);
   }
+  function prepareProposal() {
+    if (!pending) return;
+    const items = pending.proposal.items.map(item => ({
+      sku: pending.products.find(product => product.id === item.productId)?.sku,
+      quantity: proposalQuantities[item.productId],
+    }));
+    if (items.some(item => !item.sku || !Number.isInteger(item.quantity) || item.quantity < 1 || item.quantity > 1000)) return;
+    const message = locale === 'kk'
+      ? items.map(item => `Артикул ${item.sku} ${item.quantity} дана`).join('; ') + '; себетке қос'
+      : 'Добавь ' + items.map(item => `${item.quantity} шт. артикул ${item.sku}`).join('; ');
+    void send(message);
+  }
   async function confirm() {
     if (!pending || proposalChanged || (expired && !uncertain) || !start('confirm')) return;
     try {
@@ -150,7 +162,7 @@ export function Assistant({ initialLocale }: { initialLocale?: Locale }) {
   }
   function selectFile(selected?: File) {
     if (!selected) return;
-    if (!/\.(pdf|docx|xlsx|jpe?g)$/i.test(selected.name) || selected.size > 2 * 1024 * 1024 || selected.size === 0) { setFileError(true); return; }
+    if (!/\.(pdf|docx|xlsx|jpe?g|png)$/i.test(selected.name) || selected.size > 2 * 1024 * 1024 || selected.size === 0) { setFileError(true); return; }
     setFile(selected); setConsent(false); setFileError(false);
   }
   async function upload(selected = file, photoConsent = consent, language = locale, repeat = false) {
@@ -184,13 +196,19 @@ export function Assistant({ initialLocale }: { initialLocale?: Locale }) {
     const renderProduct = (product: Product, analog?: NonNullable<ChatResponse['analogs']>[number]) => <ProductCard key={product.id} product={product} locale={locale} quantity={quantities[product.id] ?? 1} onQuantity={quantity => setQuantities(old => ({ ...old, [product.id]: quantity }))} onPrepare={() => prepare(product.sku, quantities[product.id] ?? 1)} disabled={disabled} original={products[0]} analog={analog} />;
     return <div className="results">{products.map(product => renderProduct(product))}{response?.analogs.map(analog => renderProduct(analog.product, analog))}{line.attachment && <AttachmentReview rows={reviewRows[line.id] || initialRows(line.attachment)} onRowsChange={rows => setReviewRows(old => ({ ...old, [line.id]: rows }))} response={line.attachment} locale={locale} disabled={disabled} onCheck={prepare} />}</div>;
   }
-  const proposalProduct = pending?.products.find(p => p.id === pending.proposal.items[0]?.productId);
+  const validProposal = pending?.proposal.items.every(item => pending.products.some(product => product.id === item.productId) && Number.isInteger(proposalQuantities[item.productId]) && proposalQuantities[item.productId] >= 1 && proposalQuantities[item.productId] <= 1000);
   const proposal = pending && <section className="proposal" aria-label={t.confirm}>
     <div className="proposal-title"><ShoppingCart size={22} /><div><h3>{t.unchanged}</h3><small>{t.prototype}</small></div></div>
-    {pending.proposal.items.map(item => <p className="proposal-item" key={item.productId}><strong>{pending.products.find(p => p.id === item.productId)?.name || item.productId}</strong></p>)}
-    <p>{t.confirmHint}</p><div className="proposal-quantity"><span>{t.quantity}</span><Quantity value={proposalQuantity} onChange={n => { setProposalQuantity(n); setError(null); setRetry(null); }} disabled={disabled} locale={locale} /><small>{t.units}</small></div>
+    <p>{t.confirmHint}</p>
+    {pending.proposal.items.map(item => {
+      const product = pending.products.find(p => p.id === item.productId);
+      return <div className="proposal-item" key={item.productId}>
+        <strong>{product?.name || item.productId}</strong><small>{t.sku}: {product?.sku || item.productId}</small>
+        <div className="proposal-quantity"><span>{t.quantity}</span><Quantity value={proposalQuantities[item.productId] ?? item.quantity} onChange={quantity => { setProposalQuantities(old => ({ ...old, [item.productId]: quantity })); setError(null); setRetry(null); }} disabled={disabled} locale={locale} label={pending.proposal.items.length > 1 ? `${t.quantity}: ${product?.sku || item.productId}` : t.quantity} /><small>{t.units}</small></div>
+      </div>;
+    })}
     {expired && !uncertain && <p role="status">{t.expiredError}</p>}
-    {!uncertain && (proposalChanged || expired || error != null) ? <button className="primary" disabled={disabled || !proposalProduct || !Number.isInteger(proposalQuantity) || proposalQuantity < 1 || proposalQuantity > 1000} onClick={() => proposalProduct && prepare(proposalProduct.sku, proposalQuantity)}>{t.update}</button> : <button className="primary" disabled={Boolean(busy)} onClick={() => void confirm()}><Check size={18} />{busy === 'confirm' ? t.confirming : uncertain ? t.retry : t.confirm}</button>}
+    {!uncertain && (proposalChanged || expired || error != null) ? <button className="primary" disabled={disabled || !validProposal} onClick={prepareProposal}>{t.update}</button> : <button className="primary" disabled={Boolean(busy) || !validProposal} onClick={() => void confirm()}><Check size={18} />{busy === 'confirm' ? t.confirming : uncertain ? t.retry : t.confirm}</button>}
     <button className="text-button" disabled={disabled} onClick={() => setPending(null)}>{t.cancel}</button>
   </section>;
   const status = source === 'demo' ? t.demo : source === 'live' ? t.live : source === 'unavailable' ? t.offline : t.checking;
@@ -206,9 +224,9 @@ export function Assistant({ initialLocale }: { initialLocale?: Locale }) {
         {!full && proposal}
       </div>
       {error != null && <div className="error" role="alert"><span>{uncertain ? t.confirmUncertain : errorText(error, locale)}</span>{retry && retry.kind !== 'confirm' && <button disabled={Boolean(busy)} onClick={repeat}>{t.retry}</button>}{uncertain && <a href={cartLink('/cart', locale)}>{t.openCart}</a>}</div>}
-      <div className="composer-area">{fileError && <div className="error" role="alert">{t.fileInvalid}<button onClick={() => setFileError(false)} aria-label={t.close}><X size={16} /></button></div>}{file && <div className="file-preview"><div><FileText size={20} /><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small><button className="icon-button" aria-label={t.removeFile} disabled={Boolean(busy)} onClick={() => setFile(null)}><X size={17} /></button></div>{/\.jpe?g$/i.test(file.name) && <><label className="check-label"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} disabled={Boolean(busy)} />{t.photoConsent}</label><small>{t.photoHint}</small></>}<button className="secondary" disabled={disabled} onClick={() => void upload()}>{t.process}</button></div>}
+      <div className="composer-area">{fileError && <div className="error" role="alert">{t.fileInvalid}<button onClick={() => setFileError(false)} aria-label={t.close}><X size={16} /></button></div>}{file && <div className="file-preview"><div><FileText size={20} /><strong>{file.name}</strong><small>{Math.ceil(file.size / 1024)} KB</small><button className="icon-button" aria-label={t.removeFile} disabled={Boolean(busy)} onClick={() => setFile(null)}><X size={17} /></button></div>{/\.(jpe?g|png)$/i.test(file.name) && <><label className="check-label"><input type="checkbox" checked={consent} onChange={e => setConsent(e.target.checked)} disabled={Boolean(busy)} />{t.photoConsent}</label><small>{t.photoHint}</small></>}<button className="secondary" disabled={disabled} onClick={() => void upload()}>{t.process}</button></div>}
       <form className="composer" onSubmit={event => { event.preventDefault(); void send(draft); }} onDragOver={e => { if (!disabled) e.preventDefault(); }} onDrop={e => { e.preventDefault(); if (!disabled) selectFile(e.dataTransfer.files[0]); }}>
-        <input ref={fileRef} className="visually-hidden" tabIndex={-1} type="file" accept=".pdf,.docx,.xlsx,.jpg,.jpeg,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/jpeg" onChange={e => { selectFile(e.target.files?.[0]); e.target.value = ''; }} />
+        <input ref={fileRef} className="visually-hidden" tabIndex={-1} type="file" accept=".pdf,.docx,.xlsx,.jpg,.jpeg,.png,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,image/jpeg,image/png" onChange={e => { selectFile(e.target.files?.[0]); e.target.value = ''; }} />
         <button className="attach-button" type="button" title={t.fileHint} aria-label={t.attachment} disabled={disabled} onClick={() => fileRef.current?.click()}><Paperclip size={21} /></button><textarea ref={inputRef} rows={1} aria-label={t.placeholder} placeholder={t.placeholder} maxLength={2000} value={draft} disabled={disabled} onChange={e => setDraft(e.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(draft); } }} /><button className="send-button" type="submit" aria-label={t.send} disabled={disabled || !draft.trim()}><Send size={19} /></button>
       </form><div className="composer-footer"><span>{t.fileHint}</span><span>{draft.length > 1800 ? `${draft.length}/2000` : ''}</span></div></div></div>
       {full && lastResult && <aside className="detail-panel">{results(lastResult)}{proposal}</aside>}{full && !lastResult && proposal && <aside className="detail-panel">{proposal}</aside>}

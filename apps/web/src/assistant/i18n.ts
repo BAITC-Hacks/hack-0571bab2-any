@@ -23,7 +23,7 @@ const ru = {
   stockError: 'Остаток изменился. Проверьте количество и запросите новое предложение.', expiredError: 'Предложение больше не действует. Подготовьте добавление заново.',
   catalogError: 'Каталог временно недоступен. Цена и наличие сейчас не подтверждены.', limitError: 'Слишком много запросов. Повторите немного позже.',
   confirmUncertain: 'Подтверждение не получено. Повторите проверку этой же кнопкой: повтор не добавит товар дважды.',
-  fileHint: 'PDF, Word (.docx), Excel (.xlsx), JPEG · до 2 МБ', fileInvalid: 'Выберите PDF, DOCX, XLSX или JPEG размером до 2 МБ.',
+  fileHint: 'PDF, Word (.docx), Excel (.xlsx), JPEG/PNG · до 2 МБ', fileInvalid: 'Выберите PDF, DOCX, XLSX, JPEG или PNG размером до 2 МБ.',
   removeFile: 'Убрать файл', process: 'Проверить файл', photoConsent: 'Разрешаю отправить это фото сервису ИИ для распознавания.',
   photoHint: 'Без согласия доступна ручная проверка. Не загружайте платёжные данные.',
   review: 'Проверьте распознанные позиции', reviewHint: 'Распознавание может ошибаться. Исправьте артикул и количество до подбора.',
@@ -55,7 +55,7 @@ const kk: typeof ru = {
   stockError: 'Қалдық өзгерді. Санын тексеріп, жаңа ұсыныс сұраңыз.', expiredError: 'Ұсыныс жарамсыз. Қосуды қайта дайындаңыз.',
   catalogError: 'Каталог уақытша қолжетімсіз. Баға мен қалдық қазір расталмаған.', limitError: 'Сұраулар тым көп. Сәл кейінірек қайталаңыз.',
   confirmUncertain: 'Растау жауабы алынбады. Осы батырмамен қайталаңыз: тауар екі рет қосылмайды.',
-  fileHint: 'PDF, Word (.docx), Excel (.xlsx), JPEG · 2 МБ дейін', fileInvalid: 'Көлемі 2 МБ дейінгі PDF, DOCX, XLSX немесе JPEG таңдаңыз.',
+  fileHint: 'PDF, Word (.docx), Excel (.xlsx), JPEG/PNG · 2 МБ дейін', fileInvalid: 'Көлемі 2 МБ дейінгі PDF, DOCX, XLSX немесе JPEG/PNG таңдаңыз.',
   removeFile: 'Файлды алып тастау', process: 'Файлды тексеру', photoConsent: 'Тану үшін осы фотоны ЖИ сервисіне жіберуге рұқсат беремін.',
   photoHint: 'Келісімсіз қолмен тексеруге болады. Төлем деректерін жүктемеңіз.',
   review: 'Танылған позицияларды тексеріңіз', reviewHint: 'Тануда қате болуы мүмкін. Таңдау алдында артикул мен санын түзетіңіз.',
@@ -72,6 +72,8 @@ export function errorText(error: unknown, locale: Locale) {
   const t = strings(locale);
   const code = error && typeof error === 'object' && 'code' in error ? String(error.code) : '';
   if (['NETWORK', 'TIMEOUT'].includes(code)) return code === 'NETWORK' ? t.networkError : t.timeoutError;
+  if (code === 'INVALID_QUANTITY') return locale === 'kk' ? 'Әр тауар үшін 1-ден 1000-ға дейінгі бүтін санды көрсетіңіз.' : 'Для каждой позиции укажите целое количество от 1 до 1000.';
+  if (code === 'DUPLICATE_PRODUCT') return locale === 'kk' ? 'Бір тауар бірнеше рет көрсетілген. Санын нақтылаңыз.' : 'Товар указан несколько раз. Уточните общее количество.';
   if (code === 'INSUFFICIENT_STOCK') return t.stockError;
   if (['PROPOSAL_EXPIRED', 'PROPOSAL_NOT_FOUND', 'PRODUCT_CHANGED', 'SESSION_REQUIRED'].includes(code)) return t.expiredError;
   if (code.includes('CATALOG') || code.includes('STOCK_UNAVAILABLE')) return t.catalogError;
