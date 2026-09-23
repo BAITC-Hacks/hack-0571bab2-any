@@ -321,3 +321,133 @@ test('concurrent confirmation of one proposal with one idempotency key adds only
   assert.equal(detailReads, 1);
   assert.equal((await cart(app, session)).json().itemCount, 2);
 });
+
+test('new session creation is rate-limited per transport peer but existing carts stay available', async (t) => {
+  let currentTime = 0;
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin, now: () => currentTime });
+  t.after(() => app.close());
+  const established = await openSession(app);
+
+  for (let index = 1; index < 120; index++) {
+    const response = await app.inject({ method: 'GET', url: '/api/cart', headers: { host } });
+    assert.equal(response.statusCode, 200);
+  }
+  const rejected = await app.inject({ method: 'GET', url: '/api/cart', headers: { host } });
+  assert.equal(rejected.statusCode, 429);
+  assert.equal(rejected.json().error.code, 'SESSION_RATE_LIMITED');
+  assert.equal(rejected.headers['retry-after'], '60');
+  assert.equal(rejected.headers['set-cookie'], undefined);
+  assert.equal((await cart(app, established)).statusCode, 200);
+
+  currentTime += 60_000;
+  assert.equal((await app.inject({ method: 'GET', url: '/api/cart', headers: { host } })).statusCode, 200);
+});
+
+test('full session storage evicts empty carts while preserving a confirmed cart', async (t) => {
+  let currentTime = 0;
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin, now: () => currentTime });
+  t.after(() => app.close());
+  const established = await openSession(app);
+  const proposed = await chat(app, established, 'Добавь 2 ABC-123');
+  assert.equal(proposed.statusCode, 200);
+  assert.equal((await confirm(app, established, proposed.json().proposal.id, 'keep-cart-001')).statusCode, 200);
+
+  for (let index = 0; index < 4999; index++) {
+    if (index > 0 && index % 100 === 0) currentTime += 60_000;
+    const response = await app.inject({ method: 'GET', url: '/api/cart', headers: { host } });
+    assert.equal(response.statusCode, 200, `session ${index + 2}`);
+  }
+  const newcomer = await app.inject({ method: 'GET', url: '/api/cart', headers: { host } });
+  assert.equal(newcomer.statusCode, 200);
+  assert.equal((await cart(app, established)).json().itemCount, 2);
+});
+
+test('live catalog concurrency bound rejects excess reads and preserves pending cart consent', async (t) => {
+  const base = createDemoCatalog();
+  let startedReads = 0;
+  let signalFull!: () => void;
+  const full = new Promise<void>((resolve) => { signalFull = resolve; });
+  let releaseReads!: () => void;
+  const held = new Promise<void>((resolve) => { releaseReads = resolve; });
+  let hold = false;
+  const catalog: CatalogProvider = {
+    source: 'catalog_live',
+    async findBySku(sku) {
+      if (hold) {
+        startedReads++;
+        if (startedReads === 8) signalFull();
+        await held;
+      }
+      return base.findBySku(sku);
+    },
+    getById: (id) => base.getById(id),
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin });
+  t.after(() => app.close());
+  const sessions = await Promise.all(Array.from({ length: 9 }, () => openSession(app)));
+  const proposed = await chat(app, sessions[8], 'Добавь 2 ABC-123');
+  assert.equal(proposed.statusCode, 200);
+  const proposalId = proposed.json().proposal.id as string;
+
+  hold = true;
+  const inFlight = sessions.slice(0, 8).map((session) => chat(app, session, 'Есть ли ABC-123?'));
+  await full;
+  const rejected = await confirm(app, sessions[8], proposalId, 'busy-confirm-001');
+  assert.equal(rejected.statusCode, 429);
+  assert.equal(rejected.json().error.code, 'CATALOG_BUSY');
+  assert.equal((await cart(app, sessions[8])).json().itemCount, 0);
+  releaseReads();
+  const results = await Promise.all(inFlight);
+  assert.ok(results.every((result) => result.statusCode === 200));
+
+  const accepted = await confirm(app, sessions[8], proposalId, 'busy-confirm-001');
+  assert.equal(accepted.statusCode, 200);
+  assert.equal(accepted.json().cart.itemCount, 2);
+});
+
+test('live catalog rate budget rejects excess lookups before reaching the partner', async (t) => {
+  const base = createDemoCatalog();
+  let currentTime = 0;
+  let lookups = 0;
+  const catalog: CatalogProvider = {
+    source: 'catalog_live',
+    async findBySku(sku) { lookups++; return base.findBySku(sku); },
+    getById: (id) => base.getById(id),
+    findAnalogs: (product) => base.findAnalogs(product),
+  };
+  const app = buildApp({ catalog, apiOrigin: origin, now: () => currentTime });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  for (let index = 0; index < 60; index++) {
+    assert.equal((await chat(app, session, 'Есть ли ABC-123?')).statusCode, 200);
+  }
+  const rejected = await chat(app, session, 'Есть ли ABC-123?');
+  assert.equal(rejected.statusCode, 429);
+  assert.equal(rejected.json().error.code, 'CATALOG_BUSY');
+  assert.equal(lookups, 60);
+
+  currentTime += 60_000;
+  assert.equal((await chat(app, session, 'Есть ли ABC-123?')).statusCode, 200);
+  assert.equal(lookups, 61);
+});
+
+test('session cookie is Secure for an HTTPS public origin or production environment', async (t) => {
+  const httpsApp = buildApp({ catalog: createDemoCatalog(), apiOrigin: 'https://api.test' });
+  t.after(() => httpsApp.close());
+  const httpsResponse = await httpsApp.inject({ method: 'GET', url: '/api/cart', headers: { host } });
+  assert.match(String(httpsResponse.headers['set-cookie']), /; Secure(?:;|$)/);
+
+  const previous = process.env.NODE_ENV;
+  process.env.NODE_ENV = 'production';
+  try {
+    const productionApp = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+    t.after(() => productionApp.close());
+    const productionResponse = await productionApp.inject({ method: 'GET', url: '/api/cart', headers: { host } });
+    assert.match(String(productionResponse.headers['set-cookie']), /; Secure(?:;|$)/);
+  } finally {
+    if (previous === undefined) delete process.env.NODE_ENV;
+    else process.env.NODE_ENV = previous;
+  }
+});

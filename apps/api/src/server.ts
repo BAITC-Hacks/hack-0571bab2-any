@@ -33,6 +33,13 @@ type Session = {
 const SESSION_MS = 4 * 60 * 60 * 1000;
 const PROPOSAL_MS = 10 * 60 * 1000;
 const CART_URL = '/cart' as const;
+const MAX_SESSIONS = 5000;
+const SESSION_CREATION_WINDOW_MS = 60_000;
+const MAX_SESSIONS_PER_IP_PER_WINDOW = 120;
+const MAX_SESSION_CREATIONS_PER_WINDOW = 300;
+const MAX_SESSION_CREATION_IPS = 4096;
+const MAX_CONCURRENT_LIVE_CATALOG_OPS = 8;
+const MAX_LIVE_CATALOG_OPS_PER_WINDOW = 60;
 
 class ApiFailure extends Error {
   constructor(
@@ -136,7 +143,7 @@ export function buildApp(options: {
 } = {}) {
   const mode = process.env.CATALOG_MODE || 'demo';
   if (mode !== 'demo' && mode !== 'live') throw new Error('CATALOG_MODE must be demo or live');
-  const catalog = options.catalog || (mode === 'live'
+  const upstreamCatalog = options.catalog || (mode === 'live'
     ? createLiveCatalog({
       baseUrl: process.env.EKT_API_BASE_URL || '',
       username: process.env.EKT_API_USERNAME || '',
@@ -145,6 +152,30 @@ export function buildApp(options: {
     : createDemoCatalog());
   const now = options.now || Date.now;
   const sessions = new Map<string, Session>();
+  const sessionCreationByIp = new Map<string, { startedAt: number; count: number }>();
+  let sessionCreationWindow = { startedAt: now(), count: 0 };
+  let activeLiveCatalogOps = 0;
+  let liveCatalogWindow = { startedAt: now(), count: 0 };
+  async function withCatalogBudget<T>(action: () => Promise<T>): Promise<T> {
+    if (upstreamCatalog.source !== 'catalog_live') return action();
+    const time = now();
+    if (time - liveCatalogWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+      liveCatalogWindow = { startedAt: time, count: 0 };
+    }
+    if (activeLiveCatalogOps >= MAX_CONCURRENT_LIVE_CATALOG_OPS ||
+      liveCatalogWindow.count >= MAX_LIVE_CATALOG_OPS_PER_WINDOW) {
+      throw new ApiFailure(429, 'CATALOG_BUSY', 'Каталог занят. Повторите запрос позже.');
+    }
+    liveCatalogWindow.count++;
+    activeLiveCatalogOps++;
+    try { return await action(); } finally { activeLiveCatalogOps--; }
+  }
+  const catalog: CatalogProvider = {
+    source: upstreamCatalog.source,
+    findBySku: (sku) => withCatalogBudget(() => upstreamCatalog.findBySku(sku)),
+    getById: (id) => withCatalogBudget(() => upstreamCatalog.getById(id)),
+    findAnalogs: (product) => withCatalogBudget(() => upstreamCatalog.findAnalogs(product)),
+  };
   const sessionFor = new WeakMap<object, Session>();
   const app = Fastify({ logger: false, bodyLimit: 16 * 1024, requestTimeout: 10_000, genReqId: () => randomUUID() });
   app.register(multipart, { limits: { fileSize: MAX_ATTACHMENT_BYTES, files: 1, fields: 0, parts: 1 } });
@@ -159,22 +190,58 @@ export function buildApp(options: {
     }
     const needsSession = request.method === 'GET' && (request.url === '/api/cart' || request.url === '/cart');
     if (!session && needsSession) {
-      if (sessions.size >= 1000) {
-        for (const [id, value] of sessions) if (value.expiresAt <= now()) sessions.delete(id);
+      // Fastify's default request.ip is the transport peer, not a spoofable X-Forwarded-For value.
+      const clientIp = request.ip;
+      const time = now();
+      if (time - sessionCreationWindow.startedAt >= SESSION_CREATION_WINDOW_MS) {
+        sessionCreationWindow = { startedAt: time, count: 0 };
       }
-      if (sessions.size >= 5000) {
+      if (sessionCreationByIp.size >= MAX_SESSION_CREATION_IPS) {
+        for (const [ip, budget] of sessionCreationByIp) {
+          if (time - budget.startedAt >= SESSION_CREATION_WINDOW_MS) sessionCreationByIp.delete(ip);
+        }
+      }
+      const previousBudget = sessionCreationByIp.get(clientIp);
+      const budget = previousBudget && time - previousBudget.startedAt < SESSION_CREATION_WINDOW_MS
+        ? previousBudget : { startedAt: time, count: 0 };
+      if (sessionCreationWindow.count >= MAX_SESSION_CREATIONS_PER_WINDOW ||
+        budget.count >= MAX_SESSIONS_PER_IP_PER_WINDOW ||
+        (!previousBudget && sessionCreationByIp.size >= MAX_SESSION_CREATION_IPS)) {
+        reply.header('Retry-After', '60');
+        reply.code(429).send({ error: { code: 'SESSION_RATE_LIMITED', message: 'Слишком много новых сессий. Повторите позже.', requestId: String(request.id) } });
+        return;
+      }
+      if (sessions.size >= 1000) {
+        for (const [id, value] of sessions) if (value.expiresAt <= time) sessions.delete(id);
+      }
+      if (sessions.size >= MAX_SESSIONS) {
+        // Keep carts intact. Evict an empty session rather than deny every newcomer.
+        for (const [id, value] of sessions) {
+          if (value.items.length === 0 && value.confirmations.size === 0 &&
+            (!value.proposal || value.proposal.used || value.proposal.expiresAt <= time)) {
+            sessions.delete(id);
+            break;
+          }
+        }
+      }
+      if (sessions.size >= MAX_SESSIONS) {
         reply.code(429).send({ error: { code: 'SESSION_LIMIT', message: 'Сервис временно занят.', requestId: String(request.id) } });
         return;
       }
+      budget.count++;
+      sessionCreationByIp.set(clientIp, budget);
+      sessionCreationWindow.count++;
       const id = randomBytes(32).toString('hex');
       session = {
         csrfToken: randomBytes(32).toString('hex'),
-        expiresAt: now() + SESSION_MS,
+        expiresAt: time + SESSION_MS,
         items: [], proposal: null, lastProductId: null,
         confirmations: new Map(), lock: Promise.resolve(),
       };
       sessions.set(id, session);
-      const secure = request.protocol === 'https' || process.env.COOKIE_SECURE === 'true';
+      const publicApiOrigin = options.apiOrigin || process.env.API_ORIGIN || '';
+      const secure = request.protocol === 'https' || publicApiOrigin.startsWith('https://') ||
+        process.env.COOKIE_SECURE === 'true' || process.env.NODE_ENV === 'production';
       reply.header('Set-Cookie', 'ha_sid=' + id + '; Path=/; HttpOnly; SameSite=Lax; Max-Age=14400' + (secure ? '; Secure' : ''));
     }
     if (session) sessionFor.set(request, session);
