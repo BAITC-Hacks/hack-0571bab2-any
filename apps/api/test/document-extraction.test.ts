@@ -86,6 +86,11 @@ test('extracts candidate SKU and explicit quantity from text PDF', async () => {
   const result = await extractDocumentCandidates('pdf', pdf('ABC-123 2'));
   assert.deepEqual(result.candidates, [{ sku: 'ABC-123', quantity: 2, confidence: 'low' }]);
   assert.match(result.warning, /корзина не изменена/u);
+
+  const kazakh = await extractDocumentCandidates('pdf', pdf('ABC-123 2'), 'kk');
+  assert.deepEqual(kazakh.candidates, result.candidates);
+  assert.match(kazakh.warning, /Әр позицияны каталогпен тексеріп/u);
+  assert.match(kazakh.warning, /себет өзгерген жоқ/u);
 });
 
 test('extracts header-mapped DOCX table and labelled paragraph without guessing quantity', async () => {
@@ -156,4 +161,10 @@ test('does not infer quantity from price or standalone SKU', async () => {
   const result = await extractDocumentCandidates('docx', zip({ '[Content_Types].xml': types, 'word/document.xml': document }));
   assert.deepEqual(result.candidates, []);
   assert.match(result.warning, /введите позиции вручную/u);
+
+  const kazakh = await extractDocumentCandidates('docx', zip({ '[Content_Types].xml': types,
+    'word/document.xml': document }), 'kk');
+  assert.deepEqual(kazakh.candidates, []);
+  assert.match(kazakh.warning, /қолмен енгізіңіз/u);
+  assert.match(kazakh.warning, /себет өзгерген жоқ/u);
 });

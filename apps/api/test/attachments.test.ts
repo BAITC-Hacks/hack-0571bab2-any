@@ -104,9 +104,10 @@ test('multipart PDF extracts a candidate and fresh product without changing the 
   const cookie = String(first.headers['set-cookie']).split(';')[0];
   const csrf = first.json().csrfToken as string;
   const boundary = 'hackalem-test-boundary';
-  const upload = async (content: Buffer) => app.inject({
+  const upload = async (content: Buffer, locale: 'ru' | 'kk' = 'ru') => app.inject({
     method: 'POST', url: '/api/attachments',
     headers: { host: 'api.test', origin: 'http://api.test', cookie, 'x-csrf-token': csrf,
+      'x-attachment-locale': locale,
       'content-type': 'multipart/form-data; boundary=' + boundary },
     payload: Buffer.concat([
       Buffer.from('--' + boundary + '\r\nContent-Disposition: form-data; name="file"; filename="list.pdf"\r\nContent-Type: application/pdf\r\n\r\n'),
@@ -123,6 +124,12 @@ test('multipart PDF extracts a candidate and fresh product without changing the 
   assert.match(accepted.json().warning, /корзина не изменена/);
   assert.equal((await app.inject({ method: 'GET', url: '/api/cart', headers: { host: 'api.test', cookie } })).json().itemCount, 0);
 
+  const acceptedKk = await upload(syntheticPdf('ABC-123 2'), 'kk');
+  assert.equal(acceptedKk.statusCode, 200);
+  assert.deepEqual(acceptedKk.json().candidates, accepted.json().candidates);
+  assert.match(acceptedKk.json().warning, /себет өзгерген жоқ/u);
+  assert.equal(acceptedKk.json().cartChanged, false);
+
   const rejected = await upload(Buffer.from('not a PDF'));
   assert.equal(rejected.statusCode, 415);
   assert.equal(rejected.json().error.code, 'UNSUPPORTED_FILE');
@@ -130,6 +137,11 @@ test('multipart PDF extracts a candidate and fresh product without changing the 
   const damaged = await upload(Buffer.from('%PDF-1.7\nABC-123 2'));
   assert.equal(damaged.statusCode, 415);
   assert.equal(damaged.json().error.code, 'INVALID_DOCUMENT');
+
+  const damagedKk = await upload(Buffer.from('%PDF-1.7\nABC-123 2'), 'kk');
+  assert.equal(damagedKk.statusCode, 415);
+  assert.equal(damagedKk.json().error.code, 'INVALID_DOCUMENT');
+  assert.match(damagedKk.json().error.message, /Құжат бүлінген/u);
 
   const tooLarge = await upload(Buffer.alloc(MAX_ATTACHMENT_BYTES + 1, 0));
   assert.equal(tooLarge.statusCode, 413);

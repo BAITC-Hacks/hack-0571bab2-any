@@ -73,9 +73,9 @@ function mutationHeaders(session: Session) {
   return { host, origin, cookie: session.cookie, 'x-csrf-token': session.csrfToken };
 }
 
-async function chat(app: App, session: Session, message: string) {
+async function chat(app: App, session: Session, message: string, locale: 'ru' | 'kk' = 'ru') {
   return app.inject({ method: 'POST', url: '/api/chat', headers: mutationHeaders(session),
-    payload: { message, locale: 'ru' } });
+    payload: { message, locale } });
 }
 
 async function cartCount(app: App, session: Session): Promise<number> {
@@ -84,11 +84,12 @@ async function cartCount(app: App, session: Session): Promise<number> {
   return response.json().itemCount;
 }
 
-function uploadPhoto(app: App, session: Session, image: Buffer, consent: boolean, locale: 'ru' | 'kk' = 'ru') {
+function uploadPhoto(app: App, session: Session, image: Buffer, consent: boolean, locale: 'ru' | 'kk' = 'ru',
+  localeHeader: 'x-image-locale' | 'x-attachment-locale' = 'x-image-locale') {
   const boundary = 'hackalem-synthetic-photo-boundary';
   return app.inject({ method: 'POST', url: '/api/attachments', headers: {
     ...mutationHeaders(session), 'x-photo-consent': consent ? 'true' : 'false',
-    'x-image-locale': locale,
+    [localeHeader]: locale,
     'content-type': `multipart/form-data; boundary=${boundary}`,
   }, payload: Buffer.concat([
     Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="panel.png"\r\nContent-Type: image/png\r\n\r\n`),
@@ -145,6 +146,29 @@ test('model ranking cannot remove a requested category or introduce a product', 
   assert.equal(response.statusCode, 200);
   assert.deepEqual(response.json().products.map((product: Product) => product.sku).sort(), ['SYN-101', 'SYN-202']);
   assert.doesNotMatch(response.json().reply, /invented claim/);
+  assert.equal(await cartCount(app, session), 0);
+});
+
+test('Kazakh multi-category and whole-house requests retrieve fresh category candidates', async (t) => {
+  const fixture = fixtures();
+  const app = buildApp({ catalog: fixture.catalog, catalogIndex: fixture.index,
+    modelGateway: fixture.modelGateway, apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+
+  const multi = await chat(app, session, 'Маған үйге сым мен электр ұя керек', 'kk');
+  assert.equal(multi.statusCode, 200);
+  assert.deepEqual(multi.json().products.map((product: Product) => product.sku), ['SYN-101', 'SYN-202']);
+  assert.equal(multi.json().modelTier, 'balanced');
+  assert.equal(fixture.answerCalls[0]?.locale, 'kk');
+  assert.match(multi.json().reply, /Каталогтың тексерілген бөлігінен/);
+
+  const project = await chat(app, session, 'Бүкіл үйге электр жабдықтарын таңда', 'kk');
+  assert.equal(project.statusCode, 200);
+  assert.equal(project.json().modelTier, 'deep');
+  assert.equal(project.json().products.length, 4);
+  assert.equal(fixture.answerCalls[1]?.locale, 'kk');
+  assert.match(project.json().reply, /Үй жобасы үшін/);
   assert.equal(await cartCount(app, session), 0);
 });
 
@@ -300,6 +324,11 @@ test('photo response and model request honor the optional Kazakh locale', async 
   assert.equal(fixture.imageCalls[0]?.locale, 'kk');
   assert.match(response.json().reply, /Фотодағы белгілер/);
   assert.match(response.json().warning, /тек болжам/);
+
+  const unifiedHeader = await uploadPhoto(app, session, image, true, 'kk', 'x-attachment-locale');
+  assert.equal(unifiedHeader.statusCode, 200);
+  assert.equal(fixture.imageCalls[1]?.locale, 'kk');
+  assert.match(unifiedHeader.json().reply, /Фотодағы белгілер/);
   assert.equal(await cartCount(app, session), 0);
 });
 

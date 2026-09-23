@@ -380,13 +380,19 @@ async function extractPdf(buffer: Buffer): Promise<DocumentCandidate[]> {
   }
 }
 
-export async function extractDocumentCandidates(kind: DocumentKind, buffer: Buffer): Promise<DocumentExtraction> {
+export async function extractDocumentCandidates(
+  kind: DocumentKind, buffer: Buffer, locale: 'ru' | 'kk' = 'ru',
+): Promise<DocumentExtraction> {
   checkedInput(buffer);
   const candidates = kind === 'pdf' ? await extractPdf(buffer) : kind === 'docx' ? extractDocx(buffer) : extractXlsx(buffer);
   return {
     candidates,
-    warning: candidates.length
-      ? 'Артикулы и количества извлечены как кандидаты. Проверьте их по каталогу и подтвердите каждую позицию отдельно; корзина не изменена.'
-      : 'Подходящие артикулы с явным количеством не найдены. Проверьте документ и введите позиции вручную; корзина не изменена.',
+    warning: locale === 'kk'
+      ? candidates.length
+        ? 'Артикулдар мен сандар ықтимал дерек ретінде алынды. Әр позицияны каталогпен тексеріп, бөлек растаңыз; себет өзгерген жоқ.'
+        : 'Нақты саны көрсетілген артикулдар табылмады. Құжатты тексеріп, позицияларды қолмен енгізіңіз; себет өзгерген жоқ.'
+      : candidates.length
+        ? 'Артикулы и количества извлечены как кандидаты. Проверьте их по каталогу и подтвердите каждую позицию отдельно; корзина не изменена.'
+        : 'Подходящие артикулы с явным количеством не найдены. Проверьте документ и введите позиции вручную; корзина не изменена.',
   };
 }

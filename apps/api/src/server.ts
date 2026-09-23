@@ -61,6 +61,49 @@ const SEARCH_STOP_WORDS = new Set(['мне', 'нужен', 'нужна', 'нуж
   'подскажите', 'помогите', 'есть', 'ли', 'какой', 'какая', 'какие', 'подберите', 'полностью', 'собери', 'электрику',
   'и', 'или', 'на', 'в', 'по', 'из', 'этого', 'мне', 'сразу', 'несколько']);
 
+const KAZAKH_ATTACHMENT_ERRORS: Record<string, string> = {
+  INVALID_INPUT: 'Файлды file өрісінде жіберіңіз.',
+  UNSUPPORTED_FILE: 'Файл пішімі қолдау таппайды немесе мазмұнына сәйкес келмейді.',
+  EMPTY_FILE: 'Файл бос немесе жіберілмеген.',
+  FILE_TOO_LARGE: 'Файл көлемі 2 МБ шегінен асады.',
+  INVALID_FILENAME: 'Файл атауы жарамсыз.',
+  INVALID_DOCUMENT: 'Құжат бүлінген немесе оның мазмұны қолдау таппайды.',
+  DOCUMENT_TOO_COMPLEX: 'Құжат беттер, жолдар немесе ашылған дерек көлемі бойынша шектен асады.',
+  EMPTY_IMAGE: 'Фото жіберілмеген немесе файл бос.',
+  IMAGE_TOO_LARGE: 'Фото көлемі немесе ажыратымдылығы шектен асады.',
+  INVALID_IMAGE_NAME: 'Фото атауы жарамсыз.',
+  INVALID_IMAGE: 'Фото бүлінген немесе жарамсыз.',
+  UNSUPPORTED_IMAGE: 'Тек JPEG және PNG фотолары қолдау табады.',
+  ATTACHMENT_RATE_LIMIT: 'Жүктеу шегіне жеттіңіз. Бір минуттан кейін қайталаңыз.',
+  ATTACHMENT_BUSY: 'Файлдарды өңдеу бос емес. Кейінірек қайталаңыз.',
+  DOCUMENT_BUSY: 'Құжаттарды өңдеу бос емес. Кейінірек қайталаңыз.',
+  IMAGE_BUSY: 'Фотоларды өңдеу бос емес. Кейінірек қайталаңыз.',
+  PAYLOAD_TOO_LARGE: 'Файл көлемі рұқсат етілген шектен асады.',
+};
+
+const KAZAKH_API_ERRORS: Record<string, string> = {
+  SESSION_REQUIRED: 'Себетті ашып, әрекетті қайталаңыз.',
+  ORIGIN_INVALID: 'Сұрау жіберілген сайтқа рұқсат жоқ.',
+  CSRF_INVALID: 'Бетті жаңартып, әрекетті қайталаңыз.',
+  CATALOG_BUSY: 'Каталог қазір бос емес. Кейінірек қайталаңыз.',
+  CATALOG_UNAUTHORIZED: 'Каталогқа қолжетімділік жоқ.',
+  CATALOG_RATE_LIMITED: 'Каталог сұраулар санын уақытша шектеді.',
+  CATALOG_TIMEOUT: 'Каталог уақытында жауап бермеді.',
+  CATALOG_UNAVAILABLE: 'Каталог уақытша қолжетімсіз.',
+  CATALOG_INVALID_RESPONSE: 'Каталог күтпеген дерек қайтарды.',
+  CATALOG_SEARCH_INCOMPLETE: 'Каталогтан іздеу аяқталмады; тауардың бар екені расталмады.',
+  SERVICE_UNAVAILABLE: 'Қызмет уақытша қолжетімсіз. Кейінірек қайталаңыз.',
+  INVALID_INPUT: 'Сұрауды тексеріңіз.',
+  INVALID_QUANTITY: '1-ден 1000-ға дейінгі санды көрсетіңіз.',
+  IDEMPOTENCY_CONFLICT: 'Бұл әрекет кілті бұрын қолданылған.',
+  PROPOSAL_NOT_FOUND: 'Осы сессияда расталатын ұсыныс табылмады.',
+  PROPOSAL_ALREADY_USED: 'Ұсыныс бұрын расталған.',
+  PROPOSAL_EXPIRED: 'Ұсыныстың мерзімі аяқталды.',
+  STOCK_UNAVAILABLE: 'Тауардың қолда бары қазір расталмады.',
+  PRODUCT_CHANGED: 'Тауар деректері өзгерді. Жаңа ұсыныс сұраңыз.',
+  INSUFFICIENT_STOCK: 'Қоймадағы саны жеткіліксіз. Қайта растау қажет.',
+};
+
 class ApiFailure extends Error {
   constructor(
     readonly statusCode: number,
@@ -469,6 +512,8 @@ export function buildApp(options: {
 
   app.post('/api/attachments', async (request) => {
     verifyMutation(request);
+    const locale = request.headers['x-attachment-locale'] === 'kk' || request.headers['x-image-locale'] === 'kk'
+      ? 'kk' : 'ru';
     if (!request.isMultipart()) throw new ApiFailure(415, 'UNSUPPORTED_FILE', 'Ожидается один файл в multipart/form-data.');
     const session = sessionOf(request);
     const time = now();
@@ -496,7 +541,6 @@ export function buildApp(options: {
         activeImageJobs++;
         try {
           const consent = request.headers['x-photo-consent'] === 'true';
-          const locale = request.headers['x-image-locale'] === 'kk' ? 'kk' : 'ru';
           const canProcessExternally = externalProcessingAllowed || Boolean(options.modelGateway);
           const prepared = await prepareCustomerImage({ buffer: bytes, filename: file.filename, mimeType: file.mimetype }, {
             customerConsented: consent, externalProcessingAllowed: canProcessExternally,
@@ -609,7 +653,7 @@ export function buildApp(options: {
         if (activeDocumentJobs >= 2) throw new ApiFailure(429, 'DOCUMENT_BUSY', 'Обработка документов занята. Повторите позже.');
         activeDocumentJobs++;
         try {
-          const extracted = await extractDocumentCandidates(result.declaredType, bytes);
+          const extracted = await extractDocumentCandidates(result.declaredType, bytes, locale);
           const candidateSkus = [...new Set(extracted.candidates.map((candidate) => candidate.sku))].slice(0, 4);
           const current = await Promise.allSettled(candidateSkus.map((sku) => catalog.findBySku(sku)));
           const products = current.flatMap((entry, position) => entry.status === 'fulfilled' && entry.value &&
@@ -777,10 +821,18 @@ export function buildApp(options: {
 
   app.get('/cart', async (request, reply) => {
     const cart = cartSnapshot(sessionOf(request));
-    const rows = cart.items.map((item) => '<li>' + escapeHtml(item.name) + ' (' + escapeHtml(item.sku) + ') — ' + item.quantity + ' шт.</li>').join('');
+    const kk = isRecord(request.query) && request.query.lang === 'kk';
+    const rows = cart.items.map((item) => '<li>' + escapeHtml(item.name) + ' (' + escapeHtml(item.sku) + ') — ' +
+      item.quantity + (kk ? ' дана' : ' шт.') + '</li>').join('');
     reply.type('text/html; charset=utf-8');
     reply.header('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
-    return '<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Демо-корзина</title><main style="max-width:42rem;margin:3rem auto;padding:1rem;font:1rem system-ui"><h1>Демонстрационная корзина</h1><p>Это корзина прототипа, не ekt.kz. Заказ и оплата здесь недоступны.</p><ul>' + (rows || '<li>Корзина пуста.</li>') + '</ul><p>Всего: ' + cart.itemCount + ' шт.</p></main></html>';
+    return '<!doctype html><html lang="' + (kk ? 'kk' : 'ru') + '"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>' +
+      (kk ? 'Демо себет' : 'Демо-корзина') + '</title><main style="max-width:42rem;margin:3rem auto;padding:1rem;font:1rem system-ui"><h1>' +
+      (kk ? 'Демонстрациялық себет' : 'Демонстрационная корзина') + '</h1><p>' +
+      (kk ? 'Бұл прототиптің себеті, ekt.kz себеті емес. Мұнда тапсырыс беру және төлеу мүмкін емес.'
+        : 'Это корзина прототипа, не ekt.kz. Заказ и оплата здесь недоступны.') + '</p><ul>' +
+      (rows || (kk ? '<li>Себет бос.</li>' : '<li>Корзина пуста.</li>')) + '</ul><p>' +
+      (kk ? 'Барлығы: ' : 'Всего: ') + cart.itemCount + (kk ? ' дана.' : ' шт.') + '</p></main></html>';
   });
 
   app.setErrorHandler((error, request, reply) => {
@@ -794,8 +846,16 @@ export function buildApp(options: {
     const status = failure?.statusCode || attachmentFailure?.statusCode || catalogStatus || (errorStatus < 500 ? errorStatus : 503);
     const code = failure?.code || attachmentFailure?.code || (error instanceof CatalogError ? error.code :
       status === 413 ? 'PAYLOAD_TOO_LARGE' : status === 400 ? 'INVALID_INPUT' : 'SERVICE_UNAVAILABLE');
-    const message = failure?.message || attachmentFailure?.message || (error instanceof CatalogError ? error.message :
+    const defaultMessage = failure?.message || attachmentFailure?.message || (error instanceof CatalogError ? error.message :
       status === 503 ? 'Сервис временно недоступен. Повторите позже.' : 'Некорректный запрос.');
+    const isAttachment = request.url.startsWith('/api/attachments');
+    const isKazakhAttachment = isAttachment &&
+      (request.headers['x-attachment-locale'] === 'kk' || request.headers['x-image-locale'] === 'kk');
+    const isKazakhChat = request.url.startsWith('/api/chat') && isRecord(request.body) && request.body.locale === 'kk';
+    const isKazakhCart = request.url.startsWith('/api/cart/confirm') && request.headers['x-response-locale'] === 'kk';
+    const message = isKazakhAttachment
+      ? KAZAKH_ATTACHMENT_ERRORS[code] ?? KAZAKH_API_ERRORS[code] ?? defaultMessage
+      : isKazakhChat || isKazakhCart ? KAZAKH_API_ERRORS[code] ?? defaultMessage : defaultMessage;
     const detail = failure?.available === undefined ? {} : { available: failure.available };
     reply.code(status).send({ error: { code, message, requestId: String(request.id), ...detail }, ...detail });
   });

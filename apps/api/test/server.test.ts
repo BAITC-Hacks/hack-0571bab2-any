@@ -140,6 +140,26 @@ test('Kazakh chat gives prompts and requires separate consent before changing th
   assert.equal((await cart(app, session)).json().itemCount, 2);
 });
 
+test('Kazakh chat and cart confirmation return localized errors by explicit locale', async (t) => {
+  const app = buildApp({ catalog: createDemoCatalog(), apiOrigin: origin });
+  t.after(() => app.close());
+  const session = await openSession(app);
+  const invalidChat = await app.inject({ method: 'POST', url: '/api/chat',
+    headers: { ...sessionHeaders(session), 'x-csrf-token': 'wrong' },
+    payload: { message: 'ABC-123 бар ма?', locale: 'kk' } });
+  assert.equal(invalidChat.statusCode, 403);
+  assert.equal(invalidChat.json().error.code, 'CSRF_INVALID');
+  assert.match(invalidChat.json().error.message, /Бетті жаңартып/u);
+
+  const missingProposal = await app.inject({ method: 'POST', url: '/api/cart/confirm',
+    headers: { ...sessionHeaders(session), 'x-response-locale': 'kk' },
+    payload: { proposalId: 'missing_12345', idempotencyKey: 'kk_error_12345' } });
+  assert.equal(missingProposal.statusCode, 409);
+  assert.equal(missingProposal.json().error.code, 'PROPOSAL_NOT_FOUND');
+  assert.match(missingProposal.json().error.message, /Осы сессияда/u);
+  assert.equal((await cart(app, session)).json().itemCount, 0);
+});
+
 test('Kazakh reply preserves a nonstandard analog warning instead of replacing its meaning', async (t) => {
   const base = createDemoCatalog();
   const catalog: CatalogProvider = {
@@ -214,6 +234,13 @@ test('T4/T5/T7: proposal leaves cart untouched; explicit confirm adds once and /
   assert.match(page.body, /Демонстрационная корзина/);
   assert.match(page.body, /ABC-123/);
   assert.match(page.body, /Всего: 2 шт/);
+
+  const kazakhPage = await app.inject({ method: 'GET', url: '/cart?lang=kk',
+    headers: { host, cookie: session.cookie } });
+  assert.equal(kazakhPage.statusCode, 200);
+  assert.match(kazakhPage.body, /<html lang="kk">/);
+  assert.match(kazakhPage.body, /Бұл прототиптің себеті, ekt\.kz себеті емес/);
+  assert.match(kazakhPage.body, /Барлығы: 2 дана/);
 });
 
 test('T6: confirm rereads mutable stock and rejects an outdated proposal', async (t) => {
