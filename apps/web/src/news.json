@@ -1,0 +1,50 @@
+[
+  {
+    "path": "/news/seminar-vladislav-volkov/",
+    "image": "/assets/news-0.jpg",
+    "title": "Владислав Волковтың семинары",
+    "date": "17.09.2026"
+  },
+  {
+    "path": "/news/novinka-promrukav/",
+    "image": "/assets/news-1.jpg",
+    "title": "Новинка: Промрукав",
+    "date": "19.08.2026"
+  },
+  {
+    "path": "/news/novinka-vozdushnyy-av-chint/",
+    "image": "/assets/news-2.jpg",
+    "title": "Новинка: Воздушный АВ CHINT",
+    "date": "10.08.2026"
+  },
+  {
+    "path": "/news/novinka-mufty-erg-optima/",
+    "image": "/assets/news-3.jpg",
+    "title": "Новинка: Муфты ЭРГ Оптима",
+    "date": "06.08.2026"
+  },
+  {
+    "path": "/news/elektroforum-kazakhstan-/",
+    "image": "/assets/news-4.jpg",
+    "title": "ELEKTROFORUM KAZAKHSTAN",
+    "date": "31.07.2026"
+  },
+  {
+    "path": "/news/novinka-tors-iek/",
+    "image": "/assets/news-5.jpg",
+    "title": "Новинка: TORS IEK",
+    "date": "19.05.2026"
+  },
+  {
+    "path": "/news/iek-letnyaya-aktsiya-s-garantirovannymi-prizami/",
+    "image": "/assets/news-6.jpg",
+    "title": "IEK - летняя акция с гарантированными призами!",
+    "date": "29.04.2026"
+  },
+  {
+    "path": "/news/vyklyuchateli-razediniteli-trekhpozitsionnye-vrt-iek/",
+    "image": "/assets/news-7.jpg",
+    "title": "Выключатели-разъединители трехпозиционные ВРТ IEK",
+    "date": "13.04.2026"
+  }
+]
